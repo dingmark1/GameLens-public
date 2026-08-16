@@ -4,7 +4,7 @@ from pathlib import Path
 
 from PyQt6.QtCore import QObject, QThread, QTimer, QRect, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QCloseEvent
-from PyQt6.QtWidgets import QMainWindow, QMessageBox, QPushButton, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QCheckBox, QMainWindow, QMessageBox, QPushButton, QVBoxLayout, QWidget
 
 from core.ocr_engine import prewarm_ocr_engine, recognize_texts
 
@@ -82,8 +82,8 @@ class MainWindow(QMainWindow):
         # 设置窗口标题，显示在窗口顶部标题栏中，便于用户识别当前应用。
         self.setWindowTitle("GameLens")
 
-        # 设置窗口的初始大小：宽 800 像素、高 600 像素；这是一种稳定的默认布局值，适合后续按钮和中间内容区展示。
-        self.resize(800, 600)
+        # 设置窗口的初始大小：宽 400 像素、高 300 像素；这是一种稳定的默认布局值，适合后续按钮和中间内容区展示。
+        self.resize(400, 300)
 
         # 将窗口放置到当前屏幕的中心位置，避免首次启动时出现在偏离视线的区域。
         self._center_on_screen()
@@ -109,6 +109,12 @@ class MainWindow(QMainWindow):
             self._on_recognize_selected_region_text_button_clicked
         )
         layout.addWidget(self.recognize_selected_region_text_button)
+        self.auto_recognition_checkbox = QCheckBox("循环识别", self)
+        self.auto_recognition_checkbox.setChecked(False)
+        self.auto_recognition_checkbox.stateChanged.connect(
+            self._on_auto_recognition_checkbox_state_changed
+        )
+        layout.addWidget(self.auto_recognition_checkbox)
 
         # UI 状态机：idle 表示可接收用户操作，selecting/recognizing 表示当前正处于前台交互或后台识别流程。
         self._ui_state = "idle"
@@ -122,6 +128,13 @@ class MainWindow(QMainWindow):
         # OCR 预热线程：在应用启动后就开始加载模型，确保后续第一次识别更快。
         self._ocr_prewarm_thread: QThread | None = None
         self._ocr_prewarm_worker: OcrPrewarmWorker | None = None
+        # 自动识别状态：一个控制循环开关，一个防止任务重入。
+        self._is_auto_recognizing = False
+        self._is_recognition_running = False
+        self._auto_recognition_enabled = False
+        self._auto_recognition_timer = QTimer(self)
+        self._auto_recognition_timer.setInterval(5000)
+        self._auto_recognition_timer.timeout.connect(self._on_auto_recognition_timer_timeout)
 
         # 根据初始状态更新按钮启用状态，并在后台启动 OCR 预热。
         self._update_button_states()
@@ -213,32 +226,81 @@ class MainWindow(QMainWindow):
         self._show_window_in_front()
 
     def _on_recognize_selected_region_text_button_clicked(self) -> None:
-        # 识别功能也必须遵循“空闲态才能开始”的状态约束，防止重入造成线程冲突。
-        if self._ui_state != "idle":
-            print(f"当前状态为 {self._ui_state}，忽略新的识别请求")
+        if self._is_auto_recognizing:
+            self._stop_auto_recognition()
             return
 
-        # 从配置读取前一次保存的区域；如果没有保存过，则提示用户先框选区域。
+        # 只有在空闲态下才允许启动自动识别，避免与框选流程冲突。
+        if self._ui_state != "idle":
+            print(f"当前状态为 {self._ui_state}，忽略自动识别启动请求")
+            return
+
         selection_rect = load_selection_rect_from_config()
         if selection_rect is None:
             QMessageBox.warning(self, "提示", "未选择区域")
             return
 
-        try:
-            # 通过 mss 抓取当前所选区域对应的屏幕内容，生成临时截图文件供 OCR 使用。
-            temp_screenshot_path = capture_selection_with_mss(selection_rect)
-        except RuntimeError as exc:
-            QMessageBox.critical(self, "错误", str(exc))
+        self._start_auto_recognition()
+
+    def _on_auto_recognition_checkbox_state_changed(self, _state: int) -> None:
+        self._auto_recognition_enabled = self.auto_recognition_checkbox.isChecked()
+
+    def _start_auto_recognition(self) -> None:
+        if not self._auto_recognition_enabled:
+            self._perform_single_recognition()
             return
 
-        self._start_ocr_recognition(temp_screenshot_path)
+        self._is_auto_recognizing = True
+        self._auto_recognition_timer.start()
+        print("[定时识别] 自动识别已启动，每 5 秒执行一次")
+        self._update_button_states()
+        self._perform_single_recognition()
+
+    def _stop_auto_recognition(self) -> None:
+        self._auto_recognition_timer.stop()
+        self._is_auto_recognizing = False
+
+        if self._ocr_thread is not None:
+            print("[定时识别] 正在等待当前 OCR 任务完成...")
+            self._ocr_thread.quit()
+            self._ocr_thread.wait()
+            self._is_recognition_running = False
+
+        print("[定时识别] 自动识别已停止")
+        self.auto_recognition_checkbox.setEnabled(True)
+        self._update_button_states()
+
+    def _on_auto_recognition_timer_timeout(self) -> None:
+        if self._is_recognition_running:
+            print("[定时识别] 上一次识别未完成，跳过本次")
+            return
+
+        self._perform_single_recognition()
+
+    def _perform_single_recognition(self) -> None:
+        if self._is_recognition_running:
+            print("[定时识别] 上一次识别未完成，跳过本次")
+            return
+
+        self._is_recognition_running = True
+        selection_rect = load_selection_rect_from_config()
+        if selection_rect is None:
+            print("[定时识别] 未找到已框选区域，跳过本次识别")
+            self._is_recognition_running = False
+            return
+
+        try:
+            temp_screenshot_path = capture_selection_with_mss(selection_rect)
+            self._start_ocr_recognition(temp_screenshot_path)
+        except RuntimeError as exc:
+            print(f"[定时识别] 识别任务启动失败: {exc}")
+            self._is_recognition_running = False
 
     def _start_ocr_recognition(self, screenshot_path: Path) -> None:
         # 一次只允许一个 OCR 线程运行，避免多个同时识别任务争抢同一配置与 UI 状态。
         if self._ocr_thread is not None:
-            return
+            raise RuntimeError("OCR 识别线程仍在运行，无法启动新任务")
 
-        self._set_ui_state("recognizing")
         self._ocr_thread = QThread(self)
         self._ocr_worker = OcrRecognitionWorker(screenshot_path)
         self._ocr_worker.moveToThread(self._ocr_thread)
@@ -256,13 +318,12 @@ class MainWindow(QMainWindow):
     def _on_ocr_recognition_finished(self, recognized_texts: list) -> None:
         # 实际应用中这里通常还会把识别结果进一步分发到业务逻辑或显示层；
         # 当前先打印暂存结果，便于调试和验证 OCR 是否成功提取文字。
+        self._is_recognition_running = False
         print(recognized_texts)
-        self._set_ui_state("idle")
 
     def _on_ocr_recognition_failed(self, error_message: str) -> None:
-        # OCR 错误可能来自模型加载、图像解码或识别异常；直接提示用户错误信息，并恢复为 idle。
-        QMessageBox.critical(self, "错误", error_message)
-        self._set_ui_state("idle")
+        self._is_recognition_running = False
+        print(error_message)
 
     def _cleanup_ocr_recognition_thread(self) -> None:
         # 线程结束后清理 worker 和线程对象，避免 Qt 对象树中残留无效对象。
@@ -310,10 +371,18 @@ class MainWindow(QMainWindow):
         self._update_button_states()
 
     def _update_button_states(self) -> None:
-        # 仅在空闲态才允许主动触发两类操作；其他状态下按钮会被禁用，体现“单任务流”设计。
         is_idle = self._ui_state == "idle"
+        if self._is_auto_recognizing:
+            self.select_screen_region_button.setEnabled(False)
+            self.recognize_selected_region_text_button.setEnabled(True)
+            self.auto_recognition_checkbox.setEnabled(False)
+            self.recognize_selected_region_text_button.setText("停止识别")
+            return
+
         self.select_screen_region_button.setEnabled(is_idle)
         self.recognize_selected_region_text_button.setEnabled(is_idle)
+        self.auto_recognition_checkbox.setEnabled(is_idle)
+        self.recognize_selected_region_text_button.setText("识别框选区域文字")
 
     def _show_window_in_front(self) -> None:
         # 重新展示主窗口时，确保它位于其他顶层窗口前方，并主动获取焦点，方便继续操作。
@@ -323,6 +392,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:
         # 关闭窗口前优雅退出后台 OCR 线程和预热线程，防止退出时出现悬挂线程或资源未释放问题。
+        self._auto_recognition_timer.stop()
         if self._ocr_thread is not None:
             self._ocr_thread.quit()
             self._ocr_thread.wait()
