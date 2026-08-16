@@ -1,0 +1,15 @@
+{
+  "selection_region": {
+    "top_left": {
+      "x": 509,
+      "y": 364
+    },
+    "bottom_right": {
+      "x": 1129,
+      "y": 423
+    },
+    "width": 621,
+    "height": 60,
+    "screenshot_path": "D:\\VSCodeProjects\\GameLens\\logs\\screenshots\\screen_region_20260816_195557.png"
+  }
+}

@@ -1,0 +1,334 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from PyQt6.QtCore import QObject, QThread, QTimer, QRect, pyqtSignal, pyqtSlot
+from PyQt6.QtGui import QCloseEvent
+from PyQt6.QtWidgets import QMainWindow, QMessageBox, QPushButton, QVBoxLayout, QWidget
+
+from core.ocr_engine import prewarm_ocr_engine, recognize_texts
+
+from ui.screen_region_selector import (
+    SelectionOutlineOverlay,
+    ScreenSelectionOverlay,
+    capture_selection_with_mss,
+    load_selection_rect_from_config,
+    save_selection_config,
+    save_selection_screenshot,
+)
+
+
+class OcrRecognitionWorker(QObject):
+    """在后台线程中执行 OCR 识别的工作对象。
+
+    设计上把耗时的图像识别逻辑从 GUI 线程剥离出去，避免界面在识别期间出现卡顿；
+    识别完成后通过信号回传结果，让主窗口更新状态和展示处理结果。
+    """
+
+    finished = pyqtSignal(list)
+    failed = pyqtSignal(str)
+
+    def __init__(self, image_path: Path) -> None:
+        # image_path 指向被识别的屏幕截图文件； OCR 引擎需要在此图像基础上抽取文字。
+        super().__init__()
+        self._image_path = image_path
+
+    @pyqtSlot()
+    def run(self) -> None:
+        try:
+            # OCR 是典型的阻塞型操作，必须在非 GUI 线程中执行，否则会导致 UI 失去响应。
+            recognized_texts = recognize_texts(self._image_path)
+        except (RuntimeError, ValueError, TypeError, OSError) as exc:
+            # 把错误信息以信号形式发回主窗口，方便弹出提示框并恢复 UI 状态。
+            self.failed.emit(f"OCR 识别失败: {exc}")
+            return
+
+        self.finished.emit(recognized_texts)
+
+
+class OcrPrewarmWorker(QObject):
+    """启动程序时预热 OCR 引擎，减少首次识别时的等待成本。
+
+    PaddleOCR 的首次预测通常会执行较重的初始化和模型加载，因此在主窗口显示前，
+    该线程会以后台方式提前加载并执行一次极小样本，以让后续正式识别更顺畅。
+    """
+
+    finished = pyqtSignal()
+    failed = pyqtSignal(str)
+
+    @pyqtSlot()
+    def run(self) -> None:
+        try:
+            prewarm_ocr_engine()
+        except (RuntimeError, ValueError, TypeError, OSError) as exc:
+            self.failed.emit(f"OCR 预热失败: {exc}")
+            return
+
+        self.finished.emit()
+
+
+class MainWindow(QMainWindow):
+    """GameLens 的主界面窗口，负责统一协调：
+
+    - 选择待识别的屏幕区域；
+    - 触发 OCR 识别；
+    - 显示和更新界面状态；
+    - 在后台线程中完成耗时任务，保证交互流畅。
+    """
+    def __init__(self) -> None:
+        # 先调用父类构造函数，完成 QMainWindow 的底层初始化，包含 Qt 对象树、事件循环等基础设施。
+        super().__init__()
+
+        # 设置窗口标题，显示在窗口顶部标题栏中，便于用户识别当前应用。
+        self.setWindowTitle("GameLens")
+
+        # 设置窗口的初始大小：宽 800 像素、高 600 像素；这是一种稳定的默认布局值，适合后续按钮和中间内容区展示。
+        self.resize(800, 600)
+
+        # 将窗口放置到当前屏幕的中心位置，避免首次启动时出现在偏离视线的区域。
+        self._center_on_screen()
+
+        # 构造主内容区域和垂直布局；所有按钮都放在这个容器中，形成简洁的控制台式界面。
+        central_widget = QWidget(self)
+        self.setCentralWidget(central_widget)
+        layout = QVBoxLayout(central_widget)
+
+        # “框选屏幕区域”按钮用于启动全屏覆盖层，用户可以直接拖动鼠标选择截图区域。
+        self.select_screen_region_button = QPushButton("框选屏幕区域", self)
+        self.select_screen_region_button.clicked.connect(
+            self._on_select_screen_region_button_clicked
+        )
+        layout.addWidget(self.select_screen_region_button)
+
+        # “识别框选区域文字”按钮会从配置中加载上一轮选择结果，并进一步进入 OCR 流程。
+        self.recognize_selected_region_text_button = QPushButton(
+            "识别框选区域文字",
+            self,
+        )
+        self.recognize_selected_region_text_button.clicked.connect(
+            self._on_recognize_selected_region_text_button_clicked
+        )
+        layout.addWidget(self.recognize_selected_region_text_button)
+
+        # UI 状态机：idle 表示可接收用户操作，selecting/recognizing 表示当前正处于前台交互或后台识别流程。
+        self._ui_state = "idle"
+        # 屏幕框选覆盖层对象：它在用户拖拽时临时显示并负责采集坐标；完成后由上层销毁。
+        self._selection_overlay: ScreenSelectionOverlay | None = None
+        # 已确认的选择框轮廓覆盖层：用于在主界面重新显示，提示用户当前选区位置。
+        self._selection_outline_overlay: SelectionOutlineOverlay | None = None
+        # OCR 识别线程和工作对象：将重计算任务搬离 UI 线程。
+        self._ocr_thread: QThread | None = None
+        self._ocr_worker: OcrRecognitionWorker | None = None
+        # OCR 预热线程：在应用启动后就开始加载模型，确保后续第一次识别更快。
+        self._ocr_prewarm_thread: QThread | None = None
+        self._ocr_prewarm_worker: OcrPrewarmWorker | None = None
+
+        # 根据初始状态更新按钮启用状态，并在后台启动 OCR 预热。
+        self._update_button_states()
+        self._start_ocr_prewarm()
+
+    def _center_on_screen(self) -> None:
+        # 获取当前窗口附着的屏幕对象；在多显示器环境下，screen() 返回的是该窗口当前所在的那块屏幕。
+        screen = self.screen()
+        if screen is None:
+            # 极少数情况下（例如无可用屏幕信息）拿不到 screen，
+            # 此时保留 Qt 默认的初始位置，不强行硬编码窗口坐标。
+            return
+
+        # frameGeometry() 返回的是窗口的外部几何尺寸，包含标题栏与边框。
+        # 在做居中时使用它能更准确地对齐视觉中心，而不是只看可绘制区域。
+        frame_geometry = self.frameGeometry()
+
+        # 将窗口外框中心对齐到屏幕的 availableGeometry 中心，
+        # 这样任务栏等系统占用区域不会被误算进窗口居中位置。
+        frame_geometry.moveCenter(screen.availableGeometry().center())
+
+        # 再把窗口左上角移动到计算出的坐标，使窗口真正居中显示。
+        self.move(frame_geometry.topLeft())
+
+    def _on_select_screen_region_button_clicked(self) -> None:
+        # 只有在空闲态下才允许启动新的框选操作，避免重复打开多个覆盖层造成状态混乱。
+        if self._ui_state != "idle":
+            print(f"当前状态为 {self._ui_state}，忽略新的框选请求")
+            return
+
+        print("框选屏幕区域按钮被点击了")
+        self._set_ui_state("selecting")
+        # 主窗口本身不需要参与区域选择，因此先隐藏，避免干扰用户在全屏覆盖层上的拖拽。
+        self.hide()
+        # 使用 singleShot 延迟到下一事件循环，让窗口先完成隐藏并让覆盖层在新事件中创建，保证显示顺序稳定。
+        QTimer.singleShot(0, self._start_screen_region_selection)
+
+    def _start_screen_region_selection(self) -> None:
+        # 若存在旧的选择轮廓，先关闭它，避免残留框线与新选区重叠。
+        if self._selection_outline_overlay is not None:
+            self._selection_outline_overlay.close()
+            self._selection_outline_overlay = None
+
+        try:
+            # 创建覆盖整个虚拟屏幕的透明选择层，用户在其中拖拽鼠标即可选区。
+            self._selection_overlay = ScreenSelectionOverlay()
+        except RuntimeError as exc:
+            # 若当前环境没有可用屏幕或其他初始化失败，恢复 UI 并提示用户。
+            self._set_ui_state("idle")
+            QMessageBox.critical(self, "错误", str(exc))
+            self._show_window_in_front()
+            return
+
+        # 把框选过程中的完成与取消信号绑定回主窗口的处理函数。
+        self._selection_overlay.selection_completed.connect(
+            self._on_screen_region_selection_completed
+        )
+        self._selection_overlay.selection_cancelled.connect(
+            self._on_screen_region_selection_cancelled
+        )
+        self._selection_overlay.show()
+
+    def _on_screen_region_selection_completed(self, selection_rect: QRect) -> None:
+        # 选择完毕后清空临时覆盖层引用，避免持有已关闭对象导致内存或状态异常。
+        self._selection_overlay = None
+
+        try:
+            # 先保存截图文件，再把本次选择区域写入配置文件，用于后续 OCR 识别复用。
+            screenshot_path = save_selection_screenshot(selection_rect)
+            save_selection_config(selection_rect, screenshot_path)
+        except RuntimeError as exc:
+            QMessageBox.critical(self, "错误", str(exc))
+            self._set_ui_state("idle")
+            self._show_window_in_front()
+            return
+
+        # 选区成功后，在屏幕上叠加一条绿色虚线框，提醒用户当前区域边界。
+        self._selection_outline_overlay = SelectionOutlineOverlay(selection_rect)
+        self._selection_outline_overlay.show()
+
+        print(f"框选区域已保存到: {screenshot_path}")
+        self._set_ui_state("idle")
+        self._show_window_in_front()
+
+    def _on_screen_region_selection_cancelled(self) -> None:
+        # 用户按 Esc 或拖选面积过小时，视为取消当前操作并恢复到可交互状态。
+        self._selection_overlay = None
+        self._set_ui_state("idle")
+        self._show_window_in_front()
+
+    def _on_recognize_selected_region_text_button_clicked(self) -> None:
+        # 识别功能也必须遵循“空闲态才能开始”的状态约束，防止重入造成线程冲突。
+        if self._ui_state != "idle":
+            print(f"当前状态为 {self._ui_state}，忽略新的识别请求")
+            return
+
+        # 从配置读取前一次保存的区域；如果没有保存过，则提示用户先框选区域。
+        selection_rect = load_selection_rect_from_config()
+        if selection_rect is None:
+            QMessageBox.warning(self, "提示", "未选择区域")
+            return
+
+        try:
+            # 通过 mss 抓取当前所选区域对应的屏幕内容，生成临时截图文件供 OCR 使用。
+            temp_screenshot_path = capture_selection_with_mss(selection_rect)
+        except RuntimeError as exc:
+            QMessageBox.critical(self, "错误", str(exc))
+            return
+
+        self._start_ocr_recognition(temp_screenshot_path)
+
+    def _start_ocr_recognition(self, screenshot_path: Path) -> None:
+        # 一次只允许一个 OCR 线程运行，避免多个同时识别任务争抢同一配置与 UI 状态。
+        if self._ocr_thread is not None:
+            return
+
+        self._set_ui_state("recognizing")
+        self._ocr_thread = QThread(self)
+        self._ocr_worker = OcrRecognitionWorker(screenshot_path)
+        self._ocr_worker.moveToThread(self._ocr_thread)
+
+        # 当线程启动后，执行 OCR 工作对象的 run()；识别结束后触发回调并关闭线程。
+        self._ocr_thread.started.connect(self._ocr_worker.run)
+        self._ocr_worker.finished.connect(self._on_ocr_recognition_finished)
+        self._ocr_worker.failed.connect(self._on_ocr_recognition_failed)
+        self._ocr_worker.finished.connect(self._ocr_thread.quit)
+        self._ocr_worker.failed.connect(self._ocr_thread.quit)
+        self._ocr_thread.finished.connect(self._cleanup_ocr_recognition_thread)
+
+        self._ocr_thread.start()
+
+    def _on_ocr_recognition_finished(self, recognized_texts: list) -> None:
+        # 实际应用中这里通常还会把识别结果进一步分发到业务逻辑或显示层；
+        # 当前先打印暂存结果，便于调试和验证 OCR 是否成功提取文字。
+        print(recognized_texts)
+        self._set_ui_state("idle")
+
+    def _on_ocr_recognition_failed(self, error_message: str) -> None:
+        # OCR 错误可能来自模型加载、图像解码或识别异常；直接提示用户错误信息，并恢复为 idle。
+        QMessageBox.critical(self, "错误", error_message)
+        self._set_ui_state("idle")
+
+    def _cleanup_ocr_recognition_thread(self) -> None:
+        # 线程结束后清理 worker 和线程对象，避免 Qt 对象树中残留无效对象。
+        if self._ocr_worker is not None:
+            self._ocr_worker.deleteLater()
+            self._ocr_worker = None
+
+        if self._ocr_thread is not None:
+            self._ocr_thread.deleteLater()
+            self._ocr_thread = None
+
+    def _start_ocr_prewarm(self) -> None:
+        # 程序初始化时触发一次预热，早准备 OCR 模型，以减少首次真实识别的延迟。
+        self._ocr_prewarm_thread = QThread(self)
+        self._ocr_prewarm_worker = OcrPrewarmWorker()
+        self._ocr_prewarm_worker.moveToThread(self._ocr_prewarm_thread)
+
+        self._ocr_prewarm_thread.started.connect(self._ocr_prewarm_worker.run)
+        self._ocr_prewarm_worker.finished.connect(self._ocr_prewarm_thread.quit)
+        self._ocr_prewarm_worker.failed.connect(self._on_ocr_prewarm_failed)
+        self._ocr_prewarm_worker.failed.connect(self._ocr_prewarm_thread.quit)
+        self._ocr_prewarm_thread.finished.connect(self._cleanup_ocr_prewarm_thread)
+
+        self._ocr_prewarm_thread.start()
+
+    def _on_ocr_prewarm_failed(self, error_message: str) -> None:
+        # 预热失败并不一定代表主功能不可用；通常只记录日志，避免影响用户正常启动。
+        print(error_message)
+
+    def _cleanup_ocr_prewarm_thread(self) -> None:
+        # 清理 OCR 预热线程对象，避免后台任务残留导致资源泄漏。
+        if self._ocr_prewarm_worker is not None:
+            self._ocr_prewarm_worker.deleteLater()
+            self._ocr_prewarm_worker = None
+
+        if self._ocr_prewarm_thread is not None:
+            self._ocr_prewarm_thread.deleteLater()
+            self._ocr_prewarm_thread = None
+
+    def _set_ui_state(self, state: str) -> None:
+        # 状态切换是整个 UI 控制的核心：
+        # - 空闲时允许用户点击按钮；
+        # - 选择或识别时禁用交互，以防止重复操作和冲突。
+        self._ui_state = state
+        self._update_button_states()
+
+    def _update_button_states(self) -> None:
+        # 仅在空闲态才允许主动触发两类操作；其他状态下按钮会被禁用，体现“单任务流”设计。
+        is_idle = self._ui_state == "idle"
+        self.select_screen_region_button.setEnabled(is_idle)
+        self.recognize_selected_region_text_button.setEnabled(is_idle)
+
+    def _show_window_in_front(self) -> None:
+        # 重新展示主窗口时，确保它位于其他顶层窗口前方，并主动获取焦点，方便继续操作。
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        # 关闭窗口前优雅退出后台 OCR 线程和预热线程，防止退出时出现悬挂线程或资源未释放问题。
+        if self._ocr_thread is not None:
+            self._ocr_thread.quit()
+            self._ocr_thread.wait()
+
+        if self._ocr_prewarm_thread is not None:
+            self._ocr_prewarm_thread.quit()
+            self._ocr_prewarm_thread.wait()
+
+        super().closeEvent(event)
