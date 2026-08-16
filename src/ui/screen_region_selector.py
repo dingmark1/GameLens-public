@@ -170,7 +170,29 @@ def save_selection_screenshot(selection_rect: QRect) -> Path:
     if not screenshot.save(str(screenshot_path), "PNG"):
         raise RuntimeError(f"无法保存截图到 {screenshot_path}")
 
+    _cleanup_old_screenshots()
     return screenshot_path
+
+
+def _cleanup_old_screenshots(max_keep: int = 10) -> None:
+    # 仅处理符合约定命名的截图文件：screen_region_YYYYMMDD_HHMMSS.png
+    timestamped_files: list[tuple[datetime, Path]] = []
+    for file_path in SCREENSHOT_DIR.glob("screen_region_*.png"):
+        if not file_path.is_file():
+            continue
+
+        timestamp_text = file_path.stem.removeprefix("screen_region_")
+        try:
+            timestamp = datetime.strptime(timestamp_text, "%Y%m%d_%H%M%S")
+        except ValueError:
+            continue
+
+        timestamped_files.append((timestamp, file_path))
+
+    # 按文件名中的时间戳降序，保留最新的 max_keep 个，其余删除。
+    timestamped_files.sort(key=lambda item: item[0], reverse=True)
+    for _, old_file in timestamped_files[max_keep:]:
+        old_file.unlink()
 
 
 def save_selection_config(selection_rect: QRect, screenshot_path: Path) -> None:
