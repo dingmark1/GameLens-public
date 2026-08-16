@@ -15,8 +15,19 @@ from PIL import Image
 # 3. 识别函数统一提取有效文本，并返回干净的字符串列表供上层业务使用。
 
 _ocr_engine: PaddleOCR | None = None
+_current_lang = "en"
 # RLock 用于保护全局引擎实例与识别过程，确保多线程下不会出现竞争条件。
 _ocr_lock = RLock()
+
+
+def set_ocr_language(lang_code: str) -> None:
+    """设置 OCR 引擎语言，并在下次访问时重新初始化引擎。"""
+
+    global _ocr_engine, _current_lang
+
+    with _ocr_lock:
+        _current_lang = lang_code
+        _ocr_engine = None
 
 
 def get_ocr_engine() -> PaddleOCR:
@@ -26,10 +37,10 @@ def get_ocr_engine() -> PaddleOCR:
 
     with _ocr_lock:
         if _ocr_engine is None:
-            # PaddleOCR 的中文模型需要在 CPU 上运行，且在本项目中不需要 MKL 相关加速。
+            # PaddleOCR 的语言模型需要在 CPU 上运行，且在本项目中不需要 MKL 相关加速。
             # 这样能优先保证兼容性，减少某些环境下因底层库不匹配带来的问题。
             _ocr_engine = PaddleOCR(
-                lang="ch",
+                lang=_current_lang,
                 device="cpu",
                 enable_mkldnn=False,
             )

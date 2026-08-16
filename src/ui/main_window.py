@@ -4,9 +4,17 @@ from pathlib import Path
 
 from PyQt6.QtCore import QObject, QThread, QTimer, QRect, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QCloseEvent
-from PyQt6.QtWidgets import QCheckBox, QMainWindow, QMessageBox, QPushButton, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QMainWindow,
+    QMessageBox,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
 
-from core.ocr_engine import prewarm_ocr_engine, recognize_texts
+from core.ocr_engine import prewarm_ocr_engine, recognize_texts, set_ocr_language
 
 from ui.screen_region_selector import (
     SelectionOutlineOverlay,
@@ -100,6 +108,15 @@ class MainWindow(QMainWindow):
         )
         layout.addWidget(self.select_screen_region_button)
 
+        self.language_combo_box = QComboBox(self)
+        self.language_combo_box.addItem("英语", "en")
+        self.language_combo_box.addItem("日语", "japan")
+        self.language_combo_box.setCurrentIndex(0)
+        self.language_combo_box.currentIndexChanged.connect(
+            self._on_language_combo_box_changed
+        )
+        layout.addWidget(self.language_combo_box)
+
         # “识别框选区域文字”按钮会从配置中加载上一轮选择结果，并进一步进入 OCR 流程。
         self.recognize_selected_region_text_button = QPushButton(
             "识别框选区域文字",
@@ -137,6 +154,8 @@ class MainWindow(QMainWindow):
         self._auto_recognition_timer.timeout.connect(self._on_auto_recognition_timer_timeout)
 
         # 根据初始状态更新按钮启用状态，并在后台启动 OCR 预热。
+        set_ocr_language("en")
+        self._auto_recognition_enabled = self.auto_recognition_checkbox.isChecked()
         self._update_button_states()
         self._start_ocr_prewarm()
 
@@ -245,6 +264,14 @@ class MainWindow(QMainWindow):
     def _on_auto_recognition_checkbox_state_changed(self, _state: int) -> None:
         self._auto_recognition_enabled = self.auto_recognition_checkbox.isChecked()
 
+    def _on_language_combo_box_changed(self, _index: int) -> None:
+        selected_lang = self.language_combo_box.currentData()
+        if not isinstance(selected_lang, str):
+            return
+
+        self._wait_for_ocr_thread_if_needed()
+        set_ocr_language(selected_lang)
+
     def _start_auto_recognition(self) -> None:
         if not self._auto_recognition_enabled:
             self._perform_single_recognition()
@@ -269,6 +296,13 @@ class MainWindow(QMainWindow):
         print("[定时识别] 自动识别已停止")
         self.auto_recognition_checkbox.setEnabled(True)
         self._update_button_states()
+
+    def _wait_for_ocr_thread_if_needed(self) -> None:
+        if self._ocr_thread is None:
+            return
+
+        self._ocr_thread.wait()
+        self._is_recognition_running = False
 
     def _on_auto_recognition_timer_timeout(self) -> None:
         if self._is_recognition_running:
@@ -314,6 +348,7 @@ class MainWindow(QMainWindow):
         self._ocr_thread.finished.connect(self._cleanup_ocr_recognition_thread)
 
         self._ocr_thread.start()
+        self._update_button_states()
 
     def _on_ocr_recognition_finished(self, recognized_texts: list) -> None:
         # 实际应用中这里通常还会把识别结果进一步分发到业务逻辑或显示层；
@@ -334,6 +369,8 @@ class MainWindow(QMainWindow):
         if self._ocr_thread is not None:
             self._ocr_thread.deleteLater()
             self._ocr_thread = None
+
+        self._update_button_states()
 
     def _start_ocr_prewarm(self) -> None:
         # 程序初始化时触发一次预热，早准备 OCR 模型，以减少首次真实识别的延迟。
@@ -376,12 +413,14 @@ class MainWindow(QMainWindow):
             self.select_screen_region_button.setEnabled(False)
             self.recognize_selected_region_text_button.setEnabled(True)
             self.auto_recognition_checkbox.setEnabled(False)
+            self.language_combo_box.setEnabled(False)
             self.recognize_selected_region_text_button.setText("停止识别")
             return
 
         self.select_screen_region_button.setEnabled(is_idle)
         self.recognize_selected_region_text_button.setEnabled(is_idle)
         self.auto_recognition_checkbox.setEnabled(is_idle)
+        self.language_combo_box.setEnabled(is_idle and self._ocr_thread is None)
         self.recognize_selected_region_text_button.setText("识别框选区域文字")
 
     def _show_window_in_front(self) -> None:
