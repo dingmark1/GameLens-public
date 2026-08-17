@@ -25,7 +25,10 @@ _ocr_lock = RLock()
 class OcrTextBlock(TypedDict):
     # 单条 OCR 结果同时保留文字与纵向位置，供上层判断“人名行”还是“对白行”。
     text: str
+    x: float
     y: float
+    width: float
+    height: float
     y_ratio: float
 
 
@@ -59,6 +62,7 @@ def get_ocr_engine() -> PaddleOCR:
                 lang=_current_lang,
                 device="cpu",
                 enable_mkldnn=False,
+                use_angle_cls=False,
             )
 
         return _ocr_engine
@@ -131,6 +135,40 @@ def _extract_top_left(text_box: object) -> tuple[float, float] | None:
         return None
 
     return min(point[0] for point in points), min(point[1] for point in points)
+
+
+def _extract_box_metrics(text_box: object) -> tuple[float, float, float, float] | None:
+    """提取文本框的左上角和宽高。"""
+
+    if hasattr(text_box, "tolist"):
+        text_box = text_box.tolist()
+
+    if not isinstance(text_box, (list, tuple)):
+        return None
+
+    points: list[tuple[float, float]] = []
+    for point in text_box:
+        if hasattr(point, "tolist"):
+            point = point.tolist()
+
+        if not isinstance(point, (list, tuple)) or len(point) < 2:
+            continue
+
+        x_value = _to_float(point[0])
+        y_value = _to_float(point[1])
+        if x_value is None or y_value is None:
+            continue
+
+        points.append((x_value, y_value))
+
+    if not points:
+        return None
+
+    min_x = min(point[0] for point in points)
+    min_y = min(point[1] for point in points)
+    max_x = max(point[0] for point in points)
+    max_y = max(point[1] for point in points)
+    return min_x, min_y, max_x - min_x, max_y - min_y
 
 
 def _join_dialog_lines(text_lines: list[str]) -> str:
@@ -215,13 +253,15 @@ def recognize_texts(image_path: str | Path) -> list[OcrTextBlock]:
                 stripped_text = text.strip()
                 if stripped_text:
                     text_box = _extract_text_box(page_result, text_index)
-                    top_left = _extract_top_left(text_box) if text_box is not None else None
-                    if top_left is None:
+                    metrics = _extract_box_metrics(text_box) if text_box is not None else None
+                    if metrics is None:
                         x_value = math.inf
                         y_value = math.inf
+                        width_value = math.inf
+                        height_value = math.inf
                         y_ratio = math.inf
                     else:
-                        x_value, y_value = top_left
+                        x_value, y_value, width_value, height_value = metrics
                         y_ratio = y_value / image_height
 
                     recognized_texts.append(
@@ -229,6 +269,8 @@ def recognize_texts(image_path: str | Path) -> list[OcrTextBlock]:
                             "text": stripped_text,
                             "x": x_value,
                             "y": y_value,
+                            "width": width_value,
+                            "height": height_value,
                             "y_ratio": y_ratio,
                         }
                     )
@@ -247,7 +289,10 @@ def recognize_texts(image_path: str | Path) -> list[OcrTextBlock]:
     return [
         {
             "text": str(block["text"]),
+            "x": float(block["x"]),
             "y": float(block["y"]),
+            "width": float(block["width"]),
+            "height": float(block["height"]),
             "y_ratio": float(block["y_ratio"]),
         }
         for block in recognized_texts

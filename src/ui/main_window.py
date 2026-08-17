@@ -25,6 +25,7 @@ from core.translator import TranslationError, translate_dialog_result
 from ui.screen_region_selector import (
     SelectionOutlineOverlay,
     ScreenSelectionOverlay,
+    TranslationOverlay,
     capture_selection_with_mss,
     load_selection_rect_from_config,
     save_selection_config,
@@ -69,7 +70,13 @@ class OcrRecognitionWorker(QObject):
             self.failed.emit(f"翻译失败: {exc}")
             return
 
-        self.finished.emit(translated_result)
+        self.finished.emit(
+            {
+                "translation": translated_result,
+                "ocr_blocks": recognized_texts,
+                "screenshot_path": str(self._image_path),
+            }
+        )
 
 
 class OcrPrewarmWorker(QObject):
@@ -157,6 +164,8 @@ class MainWindow(QMainWindow):
         self._selection_overlay: ScreenSelectionOverlay | None = None
         # 已确认的选择框轮廓覆盖层：用于在主界面重新显示，提示用户当前选区位置。
         self._selection_outline_overlay: SelectionOutlineOverlay | None = None
+        # 翻译显示覆盖层：在选区上方展示 DeepSeek 的翻译结果。
+        self._translation_overlay: TranslationOverlay | None = None
         # OCR 识别线程和工作对象：将重计算任务搬离 UI 线程。
         self._ocr_thread: QThread | None = None
         self._ocr_worker: OcrRecognitionWorker | None = None
@@ -214,6 +223,10 @@ class MainWindow(QMainWindow):
         if self._selection_outline_overlay is not None:
             self._selection_outline_overlay.close()
             self._selection_outline_overlay = None
+
+        if self._translation_overlay is not None:
+            self._translation_overlay.close()
+            self._translation_overlay = None
 
         try:
             # 创建覆盖整个虚拟屏幕的透明选择层，用户在其中拖拽鼠标即可选区。
@@ -335,6 +348,7 @@ class MainWindow(QMainWindow):
             return
 
         self._is_recognition_running = True
+        self._hide_translation_overlay()
         selection_rect = load_selection_rect_from_config()
         if selection_rect is None:
             print("[定时识别] 未找到已框选区域，跳过本次识别")
@@ -368,12 +382,52 @@ class MainWindow(QMainWindow):
         self._ocr_thread.start()
         self._update_button_states()
 
-    def _on_ocr_recognition_finished(self, _translated_result: dict) -> None:
+    def _on_ocr_recognition_finished(self, result_payload: dict) -> None:
         self._is_recognition_running = False
+        self._show_translation_overlay(result_payload)
 
     def _on_ocr_recognition_failed(self, error_message: str) -> None:
         self._is_recognition_running = False
         print(error_message)
+
+    def _show_translation_overlay(self, result_payload: dict) -> None:
+        translated_result = result_payload.get("translation")
+        ocr_blocks = result_payload.get("ocr_blocks")
+        screenshot_path_text = result_payload.get("screenshot_path")
+
+        if not isinstance(translated_result, dict):
+            print("翻译结果缺失，无法显示覆盖层")
+            return
+
+        if not isinstance(ocr_blocks, list):
+            print("OCR 坐标信息缺失，无法显示覆盖层")
+            return
+
+        selection_rect = load_selection_rect_from_config()
+        if selection_rect is None:
+            print("未找到已框选区域，无法显示翻译覆盖层")
+            return
+
+        if self._translation_overlay is not None:
+            self._translation_overlay.close()
+            self._translation_overlay = None
+
+        screenshot_path = Path(screenshot_path_text) if isinstance(screenshot_path_text, str) and screenshot_path_text else None
+        self._translation_overlay = TranslationOverlay(
+            selection_rect,
+            screenshot_path,
+            translated_result,
+        )
+        self._translation_overlay.show()
+        if self._selection_outline_overlay is not None:
+            self._selection_outline_overlay.raise_()
+
+    def _hide_translation_overlay(self) -> None:
+        if self._translation_overlay is None:
+            return
+
+        self._translation_overlay.close()
+        self._translation_overlay = None
 
     def _cleanup_ocr_recognition_thread(self) -> None:
         # 线程结束后清理 worker 和线程对象，避免 Qt 对象树中残留无效对象。
@@ -454,5 +508,9 @@ class MainWindow(QMainWindow):
         if self._ocr_prewarm_thread is not None:
             self._ocr_prewarm_thread.quit()
             self._ocr_prewarm_thread.wait()
+
+        if self._translation_overlay is not None:
+            self._translation_overlay.close()
+            self._translation_overlay = None
 
         super().closeEvent(event)

@@ -2,15 +2,16 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from tempfile import NamedTemporaryFile
 from pathlib import Path
 from typing import TypedDict
 
 from PyQt6.QtCore import QPoint, QRect, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QGuiApplication, QKeyEvent, QMouseEvent, QPainter, QPaintEvent, QPen, QPixmap
+from PyQt6.QtGui import QColor, QFont, QGuiApplication, QKeyEvent, QMouseEvent, QPainter, QPaintEvent, QPen, QPixmap
 from PyQt6.QtWidgets import QWidget
 import mss
 import mss.tools
-from PIL import Image
+from PIL import Image, ImageFilter
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -157,6 +158,131 @@ class SelectionOutlineOverlay(QWidget):
         pen = QPen(QColor(0, 255, 0), 2, Qt.PenStyle.DashLine)
         painter.setPen(pen)
         painter.drawRect(self._selection_rect.adjusted(0, 0, -1, -1))
+
+
+class TranslationOverlay(QWidget):
+    """在选区上方显示翻译内容的透明覆盖层。"""
+
+    def __init__(
+        self,
+        selection_rect: QRect,
+        screenshot_path: Path | None,
+        translated_result: dict[str, object],
+    ) -> None:
+        super().__init__(
+            None,
+            Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.Tool
+            | Qt.WindowType.WindowStaysOnTopHint,
+        )
+        self.setGeometry(selection_rect)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        self.setWindowFlag(Qt.WindowType.WindowDoesNotAcceptFocus, True)
+
+        self._background_pixmap = self._load_blurred_background(screenshot_path)
+        self._background_size = self._background_pixmap.size() if self._background_pixmap is not None else None
+        self._translated_name = self._normalize_name(translated_result.get("name"))
+        self._translated_dialog = self._normalize_dialog(translated_result.get("dialog"))
+        self._name_rect = self._build_name_rect()
+        self._dialog_rect = self._build_dialog_rect()
+
+    def _normalize_name(self, value: object) -> str | None:
+        if isinstance(value, str):
+            text = value.strip()
+            return text or None
+
+        return None
+
+    def _normalize_dialog(self, value: object) -> str:
+        if not isinstance(value, list):
+            return ""
+
+        lines: list[str] = []
+        for item in value:
+            if isinstance(item, str) and item.strip():
+                lines.append(item.strip())
+
+        return " ".join(lines)
+
+    def _build_name_rect(self) -> QRect:
+        left = 12
+        top = 12
+        width = max(120, self.width() - 24)
+        height = 40
+        return QRect(left, top, width, height)
+
+    def _build_dialog_rect(self) -> QRect:
+        left = 12
+        top = self._name_rect.bottom() + 10
+        width = max(120, self.width() - 24)
+        height = max(40, self.height() - top - 12)
+        return QRect(left, top, width, height)
+
+    def _load_blurred_background(self, screenshot_path: Path | None) -> QPixmap | None:
+        if screenshot_path is None or not screenshot_path.exists():
+            return None
+
+        with Image.open(screenshot_path) as image:
+            blurred_image = image.filter(ImageFilter.GaussianBlur(radius=8))
+            with NamedTemporaryFile(suffix=".png", delete=False) as temporary_file:
+                temp_path = Path(temporary_file.name)
+            try:
+                blurred_image.save(temp_path)
+                return QPixmap(str(temp_path))
+            finally:
+                if temp_path.exists():
+                    temp_path.unlink()
+
+    def paintEvent(self, event: QPaintEvent) -> None:
+        del event
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        if self._background_pixmap is not None and not self._background_pixmap.isNull():
+            painter.setOpacity(0.8)
+            painter.drawPixmap(self.rect(), self._background_pixmap)
+            painter.setOpacity(1.0)
+
+        painter.fillRect(self.rect(), QColor(20, 20, 20, 90))
+
+        if self._translated_name:
+            self._draw_text_box(
+                painter,
+                self._name_rect,
+                self._translated_name,
+                font_size=18,
+                bold=True,
+            )
+
+        if self._translated_dialog:
+            self._draw_text_box(
+                painter,
+                self._dialog_rect,
+                self._translated_dialog,
+                font_size=16,
+                bold=False,
+            )
+
+    def _draw_text_box(self, painter: QPainter, rect: QRect, text: str, font_size: int, bold: bool) -> None:
+        if rect.isEmpty() or not text:
+            return
+
+        inner_rect = rect.adjusted(6, 4, -6, -4)
+        painter.save()
+        font = QFont(painter.font())
+        font.setPixelSize(font_size)
+        font.setBold(bold)
+        painter.setFont(font)
+
+        painter.setPen(QColor(0, 0, 0, 160))
+        shadow_offset = 1
+        painter.drawText(inner_rect.translated(shadow_offset, shadow_offset), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter | Qt.TextFlag.TextWordWrap, text)
+        painter.setPen(QColor(255, 255, 255))
+        painter.drawText(inner_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter | Qt.TextFlag.TextWordWrap, text)
+        painter.restore()
 
 
 def save_selection_screenshot(selection_rect: QRect) -> Path:
