@@ -6,6 +6,7 @@ from tempfile import NamedTemporaryFile
 from threading import RLock
 from typing import TypedDict
 
+import paddle
 from paddleocr import PaddleOCR
 from PIL import Image, ImageOps
 
@@ -18,6 +19,8 @@ from PIL import Image, ImageOps
 
 _ocr_engine: PaddleOCR | None = None
 _current_lang = "en"
+_ocr_device = "cpu"
+_prewarm_device_logged = False
 # RLock 用于保护全局引擎实例与识别过程，确保多线程下不会出现竞争条件。
 _ocr_lock = RLock()
 
@@ -42,27 +45,35 @@ class OcrDialogResult(TypedDict):
 def set_ocr_language(lang_code: str) -> None:
     """设置 OCR 引擎语言，并在下次访问时重新初始化引擎。"""
 
-    global _ocr_engine, _current_lang
+    global _ocr_engine, _current_lang, _prewarm_device_logged
 
     with _ocr_lock:
         _current_lang = lang_code
         _ocr_engine = None
+        _prewarm_device_logged = False
+
+
+def _resolve_ocr_device() -> str:
+    """根据当前环境选择 OCR 设备。"""
+
+    if paddle.device.is_compiled_with_cuda():
+        return "gpu:0"
+
+    return "cpu"
 
 
 def get_ocr_engine() -> PaddleOCR:
     """返回单例 OCR 引擎对象；首次调用时才初始化 PaddleOCR。"""
 
-    global _ocr_engine
+    global _ocr_engine, _ocr_device
 
     with _ocr_lock:
         if _ocr_engine is None:
-            # PaddleOCR 的语言模型需要在 CPU 上运行，且在本项目中不需要 MKL 相关加速。
-            # 这样能优先保证兼容性，减少某些环境下因底层库不匹配带来的问题。
+            _ocr_device = _resolve_ocr_device()
             _ocr_engine = PaddleOCR(
                 lang=_current_lang,
-                device="cpu",
-                enable_mkldnn=False,
-                use_angle_cls=False,
+                device=_ocr_device,
+                use_textline_orientation=False,  # 替代 use_angle_cls
             )
 
         return _ocr_engine
@@ -75,8 +86,13 @@ def prewarm_ocr_engine() -> None:
     让 PaddleOCR 完成模型加载与内部初始化，从而让正式识别更快。
     """
 
+    global _prewarm_device_logged
+
     with _ocr_lock:
         ocr_engine = get_ocr_engine()
+        if not _prewarm_device_logged:
+            print(f"[OCR] 当前使用设备: {_ocr_device}")
+            _prewarm_device_logged = True
         # 使用 NamedTemporaryFile 生成临时 PNG 文件，避免额外写入项目目录。
         with NamedTemporaryFile(suffix=".png", delete=False) as temporary_file:
             temp_image_path = Path(temporary_file.name)
