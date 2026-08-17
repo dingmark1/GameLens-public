@@ -14,7 +14,12 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from core.ocr_engine import prewarm_ocr_engine, recognize_texts, set_ocr_language
+from core.ocr_engine import (
+    format_dialog_result,
+    prewarm_ocr_engine,
+    recognize_texts,
+    set_ocr_language,
+)
 
 from ui.screen_region_selector import (
     SelectionOutlineOverlay,
@@ -33,7 +38,8 @@ class OcrRecognitionWorker(QObject):
     识别完成后通过信号回传结果，让主窗口更新状态和展示处理结果。
     """
 
-    finished = pyqtSignal(list)
+    # 识别成功后直接回传结构化字典，主窗口无需再做二次拆分。
+    finished = pyqtSignal(dict)
     failed = pyqtSignal(str)
 
     def __init__(self, image_path: Path) -> None:
@@ -46,12 +52,14 @@ class OcrRecognitionWorker(QObject):
         try:
             # OCR 是典型的阻塞型操作，必须在非 GUI 线程中执行，否则会导致 UI 失去响应。
             recognized_texts = recognize_texts(self._image_path)
+            # 先拿到带坐标的文本块，再在同一处完成“人名 / 对话”归一化，方便后续统一消费。
+            structured_result = format_dialog_result(recognized_texts)
         except (RuntimeError, ValueError, TypeError, OSError) as exc:
             # 把错误信息以信号形式发回主窗口，方便弹出提示框并恢复 UI 状态。
             self.failed.emit(f"OCR 识别失败: {exc}")
             return
 
-        self.finished.emit(recognized_texts)
+        self.finished.emit(structured_result)
 
 
 class OcrPrewarmWorker(QObject):
@@ -350,7 +358,7 @@ class MainWindow(QMainWindow):
         self._ocr_thread.start()
         self._update_button_states()
 
-    def _on_ocr_recognition_finished(self, recognized_texts: list) -> None:
+    def _on_ocr_recognition_finished(self, recognized_texts: dict) -> None:
         # 实际应用中这里通常还会把识别结果进一步分发到业务逻辑或显示层；
         # 当前先打印暂存结果，便于调试和验证 OCR 是否成功提取文字。
         self._is_recognition_running = False

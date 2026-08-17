@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from threading import RLock
+from typing import TypedDict
 
 from paddleocr import PaddleOCR
 from PIL import Image
@@ -18,6 +20,20 @@ _ocr_engine: PaddleOCR | None = None
 _current_lang = "en"
 # RLock 用于保护全局引擎实例与识别过程，确保多线程下不会出现竞争条件。
 _ocr_lock = RLock()
+
+
+class OcrTextBlock(TypedDict):
+    # 单条 OCR 结果同时保留文字与纵向位置，供上层判断“人名行”还是“对白行”。
+    text: str
+    y: float
+    y_ratio: float
+
+
+class OcrDialogResult(TypedDict):
+    # 结构化输出直接面向翻译阶段，name 与 dialog 分离，addition 预留扩展字段。
+    name: str | None
+    dialog: list[str]
+    addition: dict[str, object]
 
 
 def set_ocr_language(lang_code: str) -> None:
@@ -71,19 +87,71 @@ def prewarm_ocr_engine() -> None:
                 temp_image_path.unlink()
 
 
-def recognize_texts(image_path: str | Path) -> list[str]:
-    """对指定图像执行 OCR，并返回识别出的非空字符串列表。
+def _to_float(value: object) -> float | None:
+    if isinstance(value, (int, float)):
+        return float(value)
+
+    return None
+
+
+def _extract_text_box(page_result: dict, text_index: int) -> object | None:
+    # PaddleOCR 不同版本的返回键名可能略有差异，这里按常见字段顺序兼容读取。
+    for key in ("rec_polys", "rec_boxes", "dt_polys", "dt_boxes"):
+        text_boxes = page_result.get(key)
+        if isinstance(text_boxes, list) and text_index < len(text_boxes):
+            return text_boxes[text_index]
+
+    return None
+
+
+def _extract_top_left(text_box: object) -> tuple[float, float] | None:
+    # 统一把多边形/矩形框转换为左上角坐标，便于按从上到下的顺序排序。
+    if hasattr(text_box, "tolist"):
+        text_box = text_box.tolist()
+
+    if not isinstance(text_box, (list, tuple)):
+        return None
+
+    points: list[tuple[float, float]] = []
+    for point in text_box:
+        if hasattr(point, "tolist"):
+            point = point.tolist()
+
+        if not isinstance(point, (list, tuple)) or len(point) < 2:
+            continue
+
+        x_value = _to_float(point[0])
+        y_value = _to_float(point[1])
+        if x_value is None or y_value is None:
+            continue
+
+        points.append((x_value, y_value))
+
+    if not points:
+        return None
+
+    return min(point[0] for point in points), min(point[1] for point in points)
+
+
+def recognize_texts(image_path: str | Path) -> list[OcrTextBlock]:
+    """对指定图像执行 OCR，并返回带坐标信息的文本块列表。
 
     返回值约定为：
-    - 每个元素都是清理后的文本段；
+    - 每个元素包含清理后的文本段及其位置信息；
     - 过滤掉空字符串和非字符串类型；
     - 若 OCR 结果中某页没有文字，则跳过该页。
     """
+    with Image.open(image_path) as image:
+        image_height = float(image.height)
+
+    if image_height <= 0:
+        image_height = 1.0
 
     with _ocr_lock:
         # 整个 predict 调用都在锁内进行，强制串行化，防止不同线程同时使用同一引擎实例。
         ocr_result = get_ocr_engine().predict(str(image_path))
-    recognized_texts: list[str] = []
+
+    recognized_texts: list[dict[str, object]] = []
 
     # PaddleOCR 的返回结果通常是一个列表，每个元素对应一页图像的识别信息。
     for page_result in ocr_result:
@@ -94,12 +162,91 @@ def recognize_texts(image_path: str | Path) -> list[str]:
         if not isinstance(rec_texts, list):
             continue
 
-        for text in rec_texts:
+        for text_index, text in enumerate(rec_texts):
             if not isinstance(text, str):
                 continue
 
             stripped_text = text.strip()
             if stripped_text:
-                recognized_texts.append(stripped_text)
+                text_box = _extract_text_box(page_result, text_index)
+                top_left = _extract_top_left(text_box) if text_box is not None else None
+                if top_left is None:
+                    x_value = math.inf
+                    y_value = math.inf
+                    y_ratio = math.inf
+                else:
+                    x_value, y_value = top_left
+                    y_ratio = y_value / image_height
 
-    return recognized_texts
+                recognized_texts.append(
+                    {
+                        "text": stripped_text,
+                        "x": x_value,
+                        "y": y_value,
+                        "y_ratio": y_ratio,
+                    }
+                )
+
+    recognized_texts.sort(
+        key=lambda block: (
+            # 先按 y，再按 x，尽量还原屏幕文本的阅读顺序。
+            block["y"],
+            block["x"],
+        )
+    )
+
+    return [
+        {
+            "text": str(block["text"]),
+            "y": float(block["y"]),
+            "y_ratio": float(block["y_ratio"]),
+        }
+        for block in recognized_texts
+    ]
+
+
+def format_dialog_result(text_blocks: list[OcrTextBlock]) -> OcrDialogResult:
+    """根据 OCR 文本块生成结构化的人名/对话结果。"""
+
+    if not text_blocks:
+        return {"name": None, "dialog": [], "addition": {}}
+
+    first_block = text_blocks[0]
+    first_text = first_block["text"]
+
+    half_colon_index = first_text.find(":")
+    full_colon_index = first_text.find("：")
+
+    colon_indices = [index for index in (half_colon_index, full_colon_index) if index >= 0]
+    if colon_indices:
+        # 同一行里已经出现“人名：对白”时，直接按冒号切分，减少对坐标的依赖。
+        split_index = min(colon_indices)
+        possible_name = first_text[:split_index].strip()
+        possible_dialog = first_text[split_index + 1 :].strip()
+
+        dialog = [block["text"] for block in text_blocks[1:]]
+        if possible_dialog:
+            dialog.insert(0, possible_dialog)
+
+        return {
+            "name": possible_name or None,
+            "dialog": dialog,
+            "addition": {},
+        }
+
+    first_y_ratio = first_block["y_ratio"]
+    # 第一行不含冒号时，利用纵向位置判断其是否贴近区域顶部；贴近顶部通常是人名。
+    has_top_name = math.isfinite(first_y_ratio) and first_y_ratio < 0.1
+
+    if has_top_name:
+        return {
+            "name": first_text,
+            "dialog": [block["text"] for block in text_blocks[1:]],
+            "addition": {},
+        }
+
+    return {
+        "name": None,
+        "dialog": [block["text"] for block in text_blocks],
+        "addition": {},
+    }
