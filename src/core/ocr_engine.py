@@ -7,7 +7,7 @@ from threading import RLock
 from typing import TypedDict
 
 from paddleocr import PaddleOCR
-from PIL import Image
+from PIL import Image, ImageOps
 
 
 # OCR 引擎模块用于统一封装 PaddleOCR 的生命周期与识别流程。
@@ -133,6 +133,50 @@ def _extract_top_left(text_box: object) -> tuple[float, float] | None:
     return min(point[0] for point in points), min(point[1] for point in points)
 
 
+def _join_dialog_lines(text_lines: list[str]) -> str:
+    """将 OCR 逐行结果拼成一句话。"""
+
+    if not text_lines:
+        return ""
+
+    merged_text = text_lines[0].strip()
+    for line in text_lines[1:]:
+        current_text = line.strip()
+        if not current_text:
+            continue
+
+        if merged_text:
+            previous_char = merged_text[-1]
+            first_char = current_text[0]
+            if (
+                previous_char.isascii()
+                and previous_char.isalnum()
+                and first_char.isascii()
+                and first_char.isalnum()
+            ):
+                merged_text += " "
+
+        merged_text += current_text
+
+    return merged_text
+
+
+def _preprocess_image(image_path: str | Path) -> Path:
+    """对输入图像做 OCR 前预处理。"""
+
+    input_path = Path(image_path)
+    with Image.open(input_path) as image:
+        grayscale_image = ImageOps.grayscale(image)
+        equalized_image = ImageOps.equalize(grayscale_image)
+
+        with NamedTemporaryFile(suffix=".png", delete=False) as temporary_file:
+            processed_path = Path(temporary_file.name)
+
+        equalized_image.save(processed_path)
+
+    return processed_path
+
+
 def recognize_texts(image_path: str | Path) -> list[OcrTextBlock]:
     """对指定图像执行 OCR，并返回带坐标信息的文本块列表。
 
@@ -141,51 +185,56 @@ def recognize_texts(image_path: str | Path) -> list[OcrTextBlock]:
     - 过滤掉空字符串和非字符串类型；
     - 若 OCR 结果中某页没有文字，则跳过该页。
     """
-    with Image.open(image_path) as image:
-        image_height = float(image.height)
+    processed_image_path = _preprocess_image(image_path)
 
-    if image_height <= 0:
-        image_height = 1.0
+    try:
+        with Image.open(processed_image_path) as image:
+            image_height = float(image.height)
+        if image_height <= 0:
+            image_height = 1.0
 
-    with _ocr_lock:
-        # 整个 predict 调用都在锁内进行，强制串行化，防止不同线程同时使用同一引擎实例。
-        ocr_result = get_ocr_engine().predict(str(image_path))
+        with _ocr_lock:
+            # 整个 predict 调用都在锁内进行，强制串行化，防止不同线程同时使用同一引擎实例。
+            ocr_result = get_ocr_engine().predict(str(processed_image_path))
 
-    recognized_texts: list[dict[str, object]] = []
+        recognized_texts: list[dict[str, object]] = []
 
-    # PaddleOCR 的返回结果通常是一个列表，每个元素对应一页图像的识别信息。
-    for page_result in ocr_result:
-        if not isinstance(page_result, dict):
-            continue
-
-        rec_texts = page_result.get("rec_texts")
-        if not isinstance(rec_texts, list):
-            continue
-
-        for text_index, text in enumerate(rec_texts):
-            if not isinstance(text, str):
+        # PaddleOCR 的返回结果通常是一个列表，每个元素对应一页图像的识别信息。
+        for page_result in ocr_result:
+            if not isinstance(page_result, dict):
                 continue
 
-            stripped_text = text.strip()
-            if stripped_text:
-                text_box = _extract_text_box(page_result, text_index)
-                top_left = _extract_top_left(text_box) if text_box is not None else None
-                if top_left is None:
-                    x_value = math.inf
-                    y_value = math.inf
-                    y_ratio = math.inf
-                else:
-                    x_value, y_value = top_left
-                    y_ratio = y_value / image_height
+            rec_texts = page_result.get("rec_texts")
+            if not isinstance(rec_texts, list):
+                continue
 
-                recognized_texts.append(
-                    {
-                        "text": stripped_text,
-                        "x": x_value,
-                        "y": y_value,
-                        "y_ratio": y_ratio,
-                    }
-                )
+            for text_index, text in enumerate(rec_texts):
+                if not isinstance(text, str):
+                    continue
+
+                stripped_text = text.strip()
+                if stripped_text:
+                    text_box = _extract_text_box(page_result, text_index)
+                    top_left = _extract_top_left(text_box) if text_box is not None else None
+                    if top_left is None:
+                        x_value = math.inf
+                        y_value = math.inf
+                        y_ratio = math.inf
+                    else:
+                        x_value, y_value = top_left
+                        y_ratio = y_value / image_height
+
+                    recognized_texts.append(
+                        {
+                            "text": stripped_text,
+                            "x": x_value,
+                            "y": y_value,
+                            "y_ratio": y_ratio,
+                        }
+                    )
+    finally:
+        if processed_image_path.exists():
+            processed_image_path.unlink()
 
     recognized_texts.sort(
         key=lambda block: (
@@ -224,9 +273,9 @@ def format_dialog_result(text_blocks: list[OcrTextBlock]) -> OcrDialogResult:
         possible_name = first_text[:split_index].strip()
         possible_dialog = first_text[split_index + 1 :].strip()
 
-        dialog = [block["text"] for block in text_blocks[1:]]
-        if possible_dialog:
-            dialog.insert(0, possible_dialog)
+        dialog_lines = [possible_dialog] if possible_dialog else []
+        dialog_lines.extend(block["text"] for block in text_blocks[1:])
+        dialog = [_join_dialog_lines(dialog_lines)] if dialog_lines else []
 
         return {
             "name": possible_name or None,
@@ -239,14 +288,15 @@ def format_dialog_result(text_blocks: list[OcrTextBlock]) -> OcrDialogResult:
     has_top_name = math.isfinite(first_y_ratio) and first_y_ratio < 0.1
 
     if has_top_name:
+        dialog_lines = [block["text"] for block in text_blocks[1:]]
         return {
             "name": first_text,
-            "dialog": [block["text"] for block in text_blocks[1:]],
+            "dialog": [_join_dialog_lines(dialog_lines)] if dialog_lines else [],
             "addition": {},
         }
 
     return {
         "name": None,
-        "dialog": [block["text"] for block in text_blocks],
+        "dialog": [_join_dialog_lines([block["text"] for block in text_blocks])],
         "addition": {},
     }

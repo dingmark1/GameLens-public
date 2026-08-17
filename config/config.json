@@ -1,15 +1,15 @@
 {
   "selection_region": {
     "top_left": {
-      "x": 723,
-      "y": 738
+      "x": 725,
+      "y": 498
     },
     "bottom_right": {
-      "x": 1349,
-      "y": 871
+      "x": 1359,
+      "y": 659
     },
-    "width": 627,
-    "height": 134,
-    "screenshot_path": "D:\\VSCodeProjects\\GameLens\\logs\\screenshots\\screen_region_20260817_115822.png"
+    "width": 635,
+    "height": 162,
+    "screenshot_path": "D:\\VSCodeProjects\\GameLens\\logs\\screenshots\\screen_region_20260817_171243.png"
   }
 }

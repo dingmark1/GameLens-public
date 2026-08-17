@@ -20,6 +20,7 @@ from core.ocr_engine import (
     recognize_texts,
     set_ocr_language,
 )
+from core.translator import TranslationError, translate_dialog_result
 
 from ui.screen_region_selector import (
     SelectionOutlineOverlay,
@@ -59,7 +60,16 @@ class OcrRecognitionWorker(QObject):
             self.failed.emit(f"OCR 识别失败: {exc}")
             return
 
-        self.finished.emit(structured_result)
+        try:
+            translated_result = translate_dialog_result(structured_result)
+        except TranslationError as exc:
+            self.failed.emit(f"翻译失败: {exc}")
+            return
+        except (RuntimeError, ValueError, TypeError, OSError) as exc:
+            self.failed.emit(f"翻译失败: {exc}")
+            return
+
+        self.finished.emit(translated_result)
 
 
 class OcrPrewarmWorker(QObject):
@@ -125,9 +135,9 @@ class MainWindow(QMainWindow):
         )
         layout.addWidget(self.language_combo_box)
 
-        # “识别框选区域文字”按钮会从配置中加载上一轮选择结果，并进一步进入 OCR 流程。
+        # “识别并翻译框选区域文字”按钮会从配置中加载上一轮选择结果，并进一步进入 OCR 流程。
         self.recognize_selected_region_text_button = QPushButton(
-            "识别框选区域文字",
+            "识别并翻译框选区域文字",
             self,
         )
         self.recognize_selected_region_text_button.clicked.connect(
@@ -358,11 +368,8 @@ class MainWindow(QMainWindow):
         self._ocr_thread.start()
         self._update_button_states()
 
-    def _on_ocr_recognition_finished(self, recognized_texts: dict) -> None:
-        # 实际应用中这里通常还会把识别结果进一步分发到业务逻辑或显示层；
-        # 当前先打印暂存结果，便于调试和验证 OCR 是否成功提取文字。
+    def _on_ocr_recognition_finished(self, _translated_result: dict) -> None:
         self._is_recognition_running = False
-        print(recognized_texts)
 
     def _on_ocr_recognition_failed(self, error_message: str) -> None:
         self._is_recognition_running = False
@@ -429,7 +436,7 @@ class MainWindow(QMainWindow):
         self.recognize_selected_region_text_button.setEnabled(is_idle)
         self.auto_recognition_checkbox.setEnabled(is_idle)
         self.language_combo_box.setEnabled(is_idle and self._ocr_thread is None)
-        self.recognize_selected_region_text_button.setText("识别框选区域文字")
+        self.recognize_selected_region_text_button.setText("识别并翻译框选区域文字")
 
     def _show_window_in_front(self) -> None:
         # 重新展示主窗口时，确保它位于其他顶层窗口前方，并主动获取焦点，方便继续操作。
