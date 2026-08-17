@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt6.QtCore import QObject, QThread, QTimer, QRect, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import QObject, QThread, QTimer, QRect, Qt, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QCloseEvent
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QHBoxLayout,
     QMainWindow,
     QMessageBox,
     QPushButton,
@@ -24,12 +25,13 @@ from core.translator import TranslationError, translate_dialog_result
 
 from ui.screen_region_selector import (
     SelectionOutlineOverlay,
+    SelectionCancelButtonOverlay,
     ScreenSelectionOverlay,
     TranslationOverlay,
     capture_selection_with_mss,
     load_selection_rect_from_config,
+    reset_selection_config,
     save_selection_config,
-    save_selection_screenshot,
 )
 
 
@@ -74,7 +76,6 @@ class OcrRecognitionWorker(QObject):
             {
                 "translation": translated_result,
                 "ocr_blocks": recognized_texts,
-                "screenshot_path": str(self._image_path),
             }
         )
 
@@ -125,22 +126,21 @@ class MainWindow(QMainWindow):
         central_widget = QWidget(self)
         self.setCentralWidget(central_widget)
         layout = QVBoxLayout(central_widget)
+        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        # “框选屏幕区域”按钮用于启动全屏覆盖层，用户可以直接拖动鼠标选择截图区域。
+        # 组合1：框选按钮固定大小，水平居中，不随窗口缩放。
+        button_group_layout = QHBoxLayout()
+        button_group_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
         self.select_screen_region_button = QPushButton("框选屏幕区域", self)
         self.select_screen_region_button.clicked.connect(
             self._on_select_screen_region_button_clicked
         )
-        layout.addWidget(self.select_screen_region_button)
-
-        self.language_combo_box = QComboBox(self)
-        self.language_combo_box.addItem("英语", "en")
-        self.language_combo_box.addItem("日语", "japan")
-        self.language_combo_box.setCurrentIndex(0)
-        self.language_combo_box.currentIndexChanged.connect(
-            self._on_language_combo_box_changed
+        self.select_screen_region_button.setFixedSize(240, 40)
+        button_group_layout.addWidget(
+            self.select_screen_region_button,
+            alignment=Qt.AlignmentFlag.AlignCenter,
         )
-        layout.addWidget(self.language_combo_box)
 
         # “识别并翻译框选区域文字”按钮会从配置中加载上一轮选择结果，并进一步进入 OCR 流程。
         self.recognize_selected_region_text_button = QPushButton(
@@ -150,13 +150,39 @@ class MainWindow(QMainWindow):
         self.recognize_selected_region_text_button.clicked.connect(
             self._on_recognize_selected_region_text_button_clicked
         )
-        layout.addWidget(self.recognize_selected_region_text_button)
+        self.recognize_selected_region_text_button.setFixedSize(240, 40)
+        layout.addLayout(button_group_layout)
+
+        recognize_button_row = QHBoxLayout()
+        recognize_button_row.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        recognize_button_row.addWidget(
+            self.recognize_selected_region_text_button,
+            alignment=Qt.AlignmentFlag.AlignCenter,
+        )
+        layout.addLayout(recognize_button_row)
+
+        # 组合2：语言选择框与勾选框固定大小，并左右组合排列。
+        combo_group_layout = QHBoxLayout()
+        combo_group_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        combo_group_layout.setSpacing(12)
+
+        self.language_combo_box = QComboBox(self)
+        self.language_combo_box.addItem("英语", "en")
+        self.language_combo_box.addItem("日语", "japan")
+        self.language_combo_box.setCurrentIndex(0)
+        self.language_combo_box.currentIndexChanged.connect(
+            self._on_language_combo_box_changed
+        )
+        self.language_combo_box.setFixedSize(120, 32)
+
         self.auto_recognition_checkbox = QCheckBox("循环识别", self)
         self.auto_recognition_checkbox.setChecked(False)
         self.auto_recognition_checkbox.stateChanged.connect(
             self._on_auto_recognition_checkbox_state_changed
         )
-        layout.addWidget(self.auto_recognition_checkbox)
+        combo_group_layout.addWidget(self.language_combo_box, alignment=Qt.AlignmentFlag.AlignCenter)
+        combo_group_layout.addWidget(self.auto_recognition_checkbox, alignment=Qt.AlignmentFlag.AlignCenter)
+        layout.addLayout(combo_group_layout)
 
         # UI 状态机：idle 表示可接收用户操作，selecting/recognizing 表示当前正处于前台交互或后台识别流程。
         self._ui_state = "idle"
@@ -164,6 +190,8 @@ class MainWindow(QMainWindow):
         self._selection_overlay: ScreenSelectionOverlay | None = None
         # 已确认的选择框轮廓覆盖层：用于在主界面重新显示，提示用户当前选区位置。
         self._selection_outline_overlay: SelectionOutlineOverlay | None = None
+        # 位于绿色虚线框右上角的取消按钮覆盖层。
+        self._selection_cancel_button_overlay: SelectionCancelButtonOverlay | None = None
         # 翻译显示覆盖层：在选区上方展示 DeepSeek 的翻译结果。
         self._translation_overlay: TranslationOverlay | None = None
         # OCR 识别线程和工作对象：将重计算任务搬离 UI 线程。
@@ -172,6 +200,7 @@ class MainWindow(QMainWindow):
         # OCR 预热线程：在应用启动后就开始加载模型，确保后续第一次识别更快。
         self._ocr_prewarm_thread: QThread | None = None
         self._ocr_prewarm_worker: OcrPrewarmWorker | None = None
+        self._current_ocr_screenshot_path: Path | None = None
         # 自动识别状态：一个控制循环开关，一个防止任务重入。
         self._is_auto_recognizing = False
         self._is_recognition_running = False
@@ -223,6 +252,7 @@ class MainWindow(QMainWindow):
         if self._selection_outline_overlay is not None:
             self._selection_outline_overlay.close()
             self._selection_outline_overlay = None
+        self._hide_selection_cancel_button_overlay()
 
         if self._translation_overlay is not None:
             self._translation_overlay.close()
@@ -252,9 +282,8 @@ class MainWindow(QMainWindow):
         self._selection_overlay = None
 
         try:
-            # 先保存截图文件，再把本次选择区域写入配置文件，用于后续 OCR 识别复用。
-            screenshot_path = save_selection_screenshot(selection_rect)
-            save_selection_config(selection_rect, screenshot_path)
+            # 仅保存框选坐标，不再写入任何截图日志文件。
+            save_selection_config(selection_rect)
         except RuntimeError as exc:
             QMessageBox.critical(self, "错误", str(exc))
             self._set_ui_state("idle")
@@ -264,16 +293,50 @@ class MainWindow(QMainWindow):
         # 选区成功后，在屏幕上叠加一条绿色虚线框，提醒用户当前区域边界。
         self._selection_outline_overlay = SelectionOutlineOverlay(selection_rect)
         self._selection_outline_overlay.show()
+        self._show_selection_cancel_button_overlay(selection_rect)
 
-        print(f"框选区域已保存到: {screenshot_path}")
+        print("框选区域已保存")
         self._set_ui_state("idle")
         self._show_window_in_front()
 
     def _on_screen_region_selection_cancelled(self) -> None:
         # 用户按 Esc 或拖选面积过小时，视为取消当前操作并恢复到可交互状态。
         self._selection_overlay = None
+        self._hide_selection_cancel_button_overlay()
         self._set_ui_state("idle")
         self._show_window_in_front()
+
+    def _on_cancel_selection_button_clicked(self) -> None:
+        self._hide_selection_cancel_button_overlay()
+        self._hide_selection_outline_overlay()
+        self._hide_translation_overlay()
+        reset_selection_config()
+        print("已取消框选区域，配置已重置为未选择状态")
+
+    def _show_selection_cancel_button_overlay(self, selection_rect: QRect) -> None:
+        if self._selection_cancel_button_overlay is not None:
+            self._selection_cancel_button_overlay.close()
+
+        self._selection_cancel_button_overlay = SelectionCancelButtonOverlay(selection_rect)
+        self._selection_cancel_button_overlay.cancel_requested.connect(
+            self._on_cancel_selection_button_clicked
+        )
+        self._selection_cancel_button_overlay.show()
+        self._selection_cancel_button_overlay.raise_()
+
+    def _hide_selection_cancel_button_overlay(self) -> None:
+        if self._selection_cancel_button_overlay is None:
+            return
+
+        self._selection_cancel_button_overlay.close()
+        self._selection_cancel_button_overlay = None
+
+    def _hide_selection_outline_overlay(self) -> None:
+        if self._selection_outline_overlay is None:
+            return
+
+        self._selection_outline_overlay.close()
+        self._selection_outline_overlay = None
 
     def _on_recognize_selected_region_text_button_clicked(self) -> None:
         if self._is_auto_recognizing:
@@ -357,9 +420,11 @@ class MainWindow(QMainWindow):
 
         try:
             temp_screenshot_path = capture_selection_with_mss(selection_rect)
+            self._current_ocr_screenshot_path = temp_screenshot_path
             self._start_ocr_recognition(temp_screenshot_path)
         except RuntimeError as exc:
             print(f"[定时识别] 识别任务启动失败: {exc}")
+            self._cleanup_current_ocr_screenshot_path()
             self._is_recognition_running = False
 
     def _start_ocr_recognition(self, screenshot_path: Path) -> None:
@@ -389,38 +454,43 @@ class MainWindow(QMainWindow):
     def _on_ocr_recognition_failed(self, error_message: str) -> None:
         self._is_recognition_running = False
         print(error_message)
+        self._cleanup_current_ocr_screenshot_path()
 
     def _show_translation_overlay(self, result_payload: dict) -> None:
-        translated_result = result_payload.get("translation")
-        ocr_blocks = result_payload.get("ocr_blocks")
-        screenshot_path_text = result_payload.get("screenshot_path")
+        try:
+            translated_result = result_payload.get("translation")
+            ocr_blocks = result_payload.get("ocr_blocks")
 
-        if not isinstance(translated_result, dict):
-            print("翻译结果缺失，无法显示覆盖层")
-            return
+            if not isinstance(translated_result, dict):
+                print("翻译结果缺失，无法显示覆盖层")
+                return
 
-        if not isinstance(ocr_blocks, list):
-            print("OCR 坐标信息缺失，无法显示覆盖层")
-            return
+            if not isinstance(ocr_blocks, list):
+                print("OCR 坐标信息缺失，无法显示覆盖层")
+                return
 
-        selection_rect = load_selection_rect_from_config()
-        if selection_rect is None:
-            print("未找到已框选区域，无法显示翻译覆盖层")
-            return
+            selection_rect = load_selection_rect_from_config()
+            if selection_rect is None:
+                print("未找到已框选区域，无法显示翻译覆盖层")
+                return
 
-        if self._translation_overlay is not None:
-            self._translation_overlay.close()
-            self._translation_overlay = None
+            if self._translation_overlay is not None:
+                self._translation_overlay.close()
+                self._translation_overlay = None
 
-        screenshot_path = Path(screenshot_path_text) if isinstance(screenshot_path_text, str) and screenshot_path_text else None
-        self._translation_overlay = TranslationOverlay(
-            selection_rect,
-            screenshot_path,
-            translated_result,
-        )
-        self._translation_overlay.show()
-        if self._selection_outline_overlay is not None:
-            self._selection_outline_overlay.raise_()
+            screenshot_path = self._current_ocr_screenshot_path
+            self._translation_overlay = TranslationOverlay(
+                selection_rect,
+                screenshot_path,
+                translated_result,
+            )
+            self._translation_overlay.show()
+            if self._selection_outline_overlay is not None:
+                self._selection_outline_overlay.raise_()
+            if self._selection_cancel_button_overlay is not None:
+                self._selection_cancel_button_overlay.raise_()
+        finally:
+            self._cleanup_current_ocr_screenshot_path()
 
     def _hide_translation_overlay(self) -> None:
         if self._translation_overlay is None:
@@ -440,6 +510,14 @@ class MainWindow(QMainWindow):
             self._ocr_thread = None
 
         self._update_button_states()
+
+    def _cleanup_current_ocr_screenshot_path(self) -> None:
+        screenshot_path = self._current_ocr_screenshot_path
+        self._current_ocr_screenshot_path = None
+        if screenshot_path is None or not screenshot_path.exists():
+            return
+
+        screenshot_path.unlink()
 
     def _start_ocr_prewarm(self) -> None:
         # 程序初始化时触发一次预热，早准备 OCR 模型，以减少首次真实识别的延迟。
@@ -501,6 +579,8 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: QCloseEvent) -> None:
         # 关闭窗口前优雅退出后台 OCR 线程和预热线程，防止退出时出现悬挂线程或资源未释放问题。
         self._auto_recognition_timer.stop()
+        self._hide_selection_cancel_button_overlay()
+        self._hide_selection_outline_overlay()
         if self._ocr_thread is not None:
             self._ocr_thread.quit()
             self._ocr_thread.wait()

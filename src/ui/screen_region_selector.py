@@ -1,28 +1,24 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
 from tempfile import NamedTemporaryFile
 from pathlib import Path
 from typing import TypedDict
 
 from PyQt6.QtCore import QPoint, QRect, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QFont, QGuiApplication, QKeyEvent, QMouseEvent, QPainter, QPaintEvent, QPen, QPixmap
-from PyQt6.QtWidgets import QWidget
+from PyQt6.QtWidgets import QPushButton, QWidget
 import mss
-import mss.tools
 from PIL import Image, ImageFilter
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = PROJECT_ROOT / "config" / "config.json"
-SCREENSHOT_DIR = PROJECT_ROOT / "logs" / "screenshots"
-TEMP_SCREENSHOT_PATH = PROJECT_ROOT / "temp_screenshot.png"
 
 # 该模块负责“框选屏幕区域”的全部交互与数据处理：
 # 1. 通过全屏透明覆盖层让用户按住鼠标拖出矩形区域；
 # 2. 把 Qt 逻辑坐标转换到实际显示器坐标；
-# 3. 保存截图与配置，供后续 OCR 识别使用。
+# 3. 保存框选配置，供后续 OCR 识别使用。
 # 该逻辑必须同时兼容多显示器环境和高 DPI 缩放场景。
 
 
@@ -160,6 +156,51 @@ class SelectionOutlineOverlay(QWidget):
         painter.drawRect(self._selection_rect.adjusted(0, 0, -1, -1))
 
 
+class SelectionCancelButtonOverlay(QPushButton):
+    """显示在已选区域右上角的取消按钮。"""
+
+    cancel_requested = pyqtSignal()
+
+    def __init__(self, selection_rect: QRect) -> None:
+        self._button_size = 24
+        self._margin = 4
+
+        super().__init__("✕")
+        self.setFixedSize(self._button_size, self._button_size)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip("取消框选区域")
+        self.clicked.connect(self.cancel_requested.emit)
+        self.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.Tool
+            | Qt.WindowType.WindowStaysOnTopHint
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        self.setWindowFlag(Qt.WindowType.WindowDoesNotAcceptFocus, True)
+        self.setStyleSheet(
+            """
+            QPushButton {
+                color: white;
+                background-color: rgba(220, 53, 69, 220);
+                border: none;
+                border-radius: 12px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: rgba(200, 35, 51, 240);
+            }
+            QPushButton:pressed {
+                background-color: rgba(170, 25, 41, 240);
+            }
+            """
+        )
+
+        button_x = selection_rect.left() + selection_rect.width() - self._button_size - self._margin
+        button_y = selection_rect.top() + self._margin
+        self.move(button_x, button_y)
+
+
 class TranslationOverlay(QWidget):
     """在选区上方显示翻译内容的透明覆盖层。"""
 
@@ -285,44 +326,8 @@ class TranslationOverlay(QWidget):
         painter.restore()
 
 
-def save_selection_screenshot(selection_rect: QRect) -> Path:
-    # 先确保截图目录存在，再按时间戳生成唯一文件名，便于后续追踪和回放。
-    SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
-    screenshot = _capture_selection(selection_rect)
-
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    screenshot_path = SCREENSHOT_DIR / f"screen_region_{timestamp}.png"
-
-    if not screenshot.save(str(screenshot_path), "PNG"):
-        raise RuntimeError(f"无法保存截图到 {screenshot_path}")
-
-    _cleanup_old_screenshots()
-    return screenshot_path
-
-
-def _cleanup_old_screenshots(max_keep: int = 10) -> None:
-    # 仅处理符合约定命名的截图文件：screen_region_YYYYMMDD_HHMMSS.png
-    timestamped_files: list[tuple[datetime, Path]] = []
-    for file_path in SCREENSHOT_DIR.glob("screen_region_*.png"):
-        if not file_path.is_file():
-            continue
-
-        timestamp_text = file_path.stem.removeprefix("screen_region_")
-        try:
-            timestamp = datetime.strptime(timestamp_text, "%Y%m%d_%H%M%S")
-        except ValueError:
-            continue
-
-        timestamped_files.append((timestamp, file_path))
-
-    # 按文件名中的时间戳降序，保留最新的 max_keep 个，其余删除。
-    timestamped_files.sort(key=lambda item: item[0], reverse=True)
-    for _, old_file in timestamped_files[max_keep:]:
-        old_file.unlink()
-
-
-def save_selection_config(selection_rect: QRect, screenshot_path: Path) -> None:
-    # 将矩形坐标和截图文件路径持久化到 JSON 配置，供后续识别流程直接读取。
+def save_selection_config(selection_rect: QRect) -> None:
+    # 仅将矩形坐标持久化到 JSON 配置，不再保存任何截图路径。
     config_data = _load_config()
     normalized_rect = selection_rect.normalized()
 
@@ -337,7 +342,6 @@ def save_selection_config(selection_rect: QRect, screenshot_path: Path) -> None:
         },
         "width": normalized_rect.width(),
         "height": normalized_rect.height(),
-        "screenshot_path": str(screenshot_path),
     }
 
     _write_config(config_data)
@@ -391,7 +395,9 @@ def load_selection_rect_from_config() -> QRect | None:
 def capture_selection_with_mss(selection_rect: QRect) -> Path:
     # 该函数以 mss 为底层抓屏，能更稳定地处理多屏拼接和缩放比例问题。
     normalized_rect = selection_rect.normalized()
-    output_path = TEMP_SCREENSHOT_PATH
+    with NamedTemporaryFile(suffix=".png", delete=False) as temporary_file:
+        output_path = Path(temporary_file.name)
+
     with mss.MSS() as screenshotter:
         mappings = _build_screen_mappings(screenshotter)
         fragments: list[tuple[Image.Image, QRect]] = []
@@ -466,7 +472,6 @@ def _default_selection_region() -> dict[str, object]:
         },
         "width": -1,
         "height": -1,
-        "screenshot_path": "",
     }
 
 
