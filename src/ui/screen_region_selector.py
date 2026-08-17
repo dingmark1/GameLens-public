@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from tempfile import NamedTemporaryFile
 from pathlib import Path
 from typing import TypedDict
@@ -11,14 +10,14 @@ from PyQt6.QtWidgets import QPushButton, QWidget
 import mss
 from PIL import Image, ImageFilter
 
-
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-CONFIG_PATH = PROJECT_ROOT / "config" / "config.json"
+_selection_rect_cache: QRect | None = None
 
 # 该模块负责“框选屏幕区域”的全部交互与数据处理：
 # 1. 通过全屏透明覆盖层让用户按住鼠标拖出矩形区域；
 # 2. 把 Qt 逻辑坐标转换到实际显示器坐标；
-# 3. 保存框选配置，供后续 OCR 识别使用。
+# 3. 在程序内部缓存框选区域，供后续 OCR 识别使用。
+# 这里的缓存只存在于当前进程内，程序重启后会自动丢失；
+# 这样可以避免把纯运行时状态写入 config.json，同时保留单次启动内的连续使用体验。
 # 该逻辑必须同时兼容多显示器环境和高 DPI 缩放场景。
 
 
@@ -326,161 +325,92 @@ class TranslationOverlay(QWidget):
         painter.restore()
 
 
-def save_selection_config(selection_rect: QRect) -> None:
-    # 仅将矩形坐标持久化到 JSON 配置，不再保存任何截图路径。
-    config_data = _load_config()
+def save_selection_rect_to_memory(selection_rect: QRect) -> None:
+    """把当前框选区域保存到进程内缓存。
+
+    说明：
+    - 这里不会写入磁盘，也不会更新任何配置文件；
+    - 只要程序不退出，后续 OCR / 翻译流程就能复用这份区域；
+    - 重新启动程序后，缓存自然清空。
+    """
+
     normalized_rect = selection_rect.normalized()
-
-    config_data["selection_region"] = {
-        "top_left": {
-            "x": normalized_rect.topLeft().x(),
-            "y": normalized_rect.topLeft().y(),
-        },
-        "bottom_right": {
-            "x": normalized_rect.bottomRight().x(),
-            "y": normalized_rect.bottomRight().y(),
-        },
-        "width": normalized_rect.width(),
-        "height": normalized_rect.height(),
-    }
-
-    _write_config(config_data)
+    global _selection_rect_cache
+    _selection_rect_cache = QRect(normalized_rect)
 
 
-def reset_selection_config() -> None:
-    # 启动时清空缓存区域，确保后续识别不会误用旧坐标。
-    try:
-        config_data = _load_config()
-    except RuntimeError as exc:
-        print(f"配置文件已损坏，重建 selection_region: {exc}")
-        config_data = {}
+def reset_selection_rect_memory() -> None:
+    """清空进程内的框选缓存。"""
 
-    config_data["selection_region"] = _default_selection_region()
-    _write_config(config_data)
+    # 启动时主动清空缓存，确保不会误用上一轮运行留下的旧坐标。
+    global _selection_rect_cache
+    _selection_rect_cache = None
 
 
-def load_selection_rect_from_config() -> QRect | None:
-    # 读取已持久化的区域信息，并将 JSON 坐标恢复成 QRect 用于后续识别动作。
-    try:
-        config_data = _load_config()
-    except RuntimeError as exc:
-        print(f"读取框选区域配置失败: {exc}")
+def load_selection_rect_from_memory() -> QRect | None:
+    """从进程内缓存读取框选区域。"""
+
+    # 如果用户还没有完成框选，或者程序刚启动就被查询，这里会返回 None。
+    if _selection_rect_cache is None:
         return None
 
-    selection_region = config_data.get("selection_region")
-    if not isinstance(selection_region, dict):
-        print("selection_region 配置不存在或格式错误")
-        return None
-
-    top_left = selection_region.get("top_left")
-    bottom_right = selection_region.get("bottom_right")
-    if not isinstance(top_left, dict) or not isinstance(bottom_right, dict):
-        print("selection_region.top_left 或 selection_region.bottom_right 格式错误")
-        return None
-
-    left = _get_int_value(top_left, "x")
-    top = _get_int_value(top_left, "y")
-    right = _get_int_value(bottom_right, "x")
-    bottom = _get_int_value(bottom_right, "y")
-    if None in (left, top, right, bottom):
-        print("selection_region 坐标字段类型错误")
-        return None
-
-    if -1 in (left, top, right, bottom):
-        return None
-
-    return QRect(QPoint(left, top), QPoint(right, bottom)).normalized()
+    return QRect(_selection_rect_cache)
 
 
-def capture_selection_with_mss(selection_rect: QRect) -> Path:
+def capture_selection_with_mss(
+    selection_rect: QRect,
+    translation_overlay: TranslationOverlay | None = None,
+) -> Path:
     # 该函数以 mss 为底层抓屏，能更稳定地处理多屏拼接和缩放比例问题。
+    should_restore_translation_overlay = (
+        translation_overlay is not None and translation_overlay.isVisible()
+    )
+    if should_restore_translation_overlay and translation_overlay is not None:
+        translation_overlay.hide()
+
     normalized_rect = selection_rect.normalized()
     with NamedTemporaryFile(suffix=".png", delete=False) as temporary_file:
         output_path = Path(temporary_file.name)
 
-    with mss.MSS() as screenshotter:
-        mappings = _build_screen_mappings(screenshotter)
-        fragments: list[tuple[Image.Image, QRect]] = []
+    try:
+        with mss.MSS() as screenshotter:
+            mappings = _build_screen_mappings(screenshotter)
+            fragments: list[tuple[Image.Image, QRect]] = []
 
-        for mapping in mappings:
-            logical_geometry = mapping["logical_geometry"]
-            logical_intersection = normalized_rect.intersected(logical_geometry)
-            if logical_intersection.isEmpty():
-                continue
+            for mapping in mappings:
+                logical_geometry = mapping["logical_geometry"]
+                logical_intersection = normalized_rect.intersected(logical_geometry)
+                if logical_intersection.isEmpty():
+                    continue
 
-            monitor_rect = _logical_rect_to_monitor_rect(logical_intersection, mapping)
-            screenshot = screenshotter.grab(monitor_rect)
-            fragment_image = Image.frombytes("RGB", screenshot.size, screenshot.rgb)
-            fragments.append((fragment_image, _monitor_dict_to_qrect(monitor_rect)))
+                monitor_rect = _logical_rect_to_monitor_rect(logical_intersection, mapping)
+                screenshot = screenshotter.grab(monitor_rect)
+                fragment_image = Image.frombytes("RGB", screenshot.size, screenshot.rgb)
+                fragments.append((fragment_image, _monitor_dict_to_qrect(monitor_rect)))
 
-        if not fragments:
-            raise RuntimeError("未获取到可用截图内容，请检查框选区域是否在可见屏幕内")
+            if not fragments:
+                raise RuntimeError("未获取到可用截图内容，请检查框选区域是否在可见屏幕内")
 
-        union_rect = fragments[0][1]
-        for _, fragment_rect in fragments[1:]:
-            union_rect = union_rect.united(fragment_rect)
+            union_rect = fragments[0][1]
+            for _, fragment_rect in fragments[1:]:
+                union_rect = union_rect.united(fragment_rect)
 
-        stitched_image = Image.new("RGB", (union_rect.width(), union_rect.height()))
-        for fragment_image, fragment_rect in fragments:
-            stitched_image.paste(
-                fragment_image,
-                (
-                    fragment_rect.left() - union_rect.left(),
-                    fragment_rect.top() - union_rect.top(),
-                ),
-            )
+            stitched_image = Image.new("RGB", (union_rect.width(), union_rect.height()))
+            for fragment_image, fragment_rect in fragments:
+                stitched_image.paste(
+                    fragment_image,
+                    (
+                        fragment_rect.left() - union_rect.left(),
+                        fragment_rect.top() - union_rect.top(),
+                    ),
+                )
 
-        stitched_image.save(output_path)
+            stitched_image.save(output_path)
+    finally:
+        if should_restore_translation_overlay and translation_overlay is not None:
+            translation_overlay.show()
 
     return output_path
-
-
-def _load_config() -> dict[str, object]:
-    # 配置文件保存在项目根目录的 config/config.json，记录最后一次选择的区域。
-    if not CONFIG_PATH.exists():
-        return {"selection_region": _default_selection_region()}
-
-    try:
-        config_data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(f"{CONFIG_PATH} 不是合法的 JSON 文件") from exc
-
-    if not isinstance(config_data, dict):
-        raise RuntimeError(f"{CONFIG_PATH} 的根节点必须是 JSON 对象")
-
-    return config_data
-
-
-def _write_config(config_data: dict[str, object]) -> None:
-    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    CONFIG_PATH.write_text(
-        json.dumps(config_data, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-
-
-def _default_selection_region() -> dict[str, object]:
-    # 默认值使用 -1 作为“未设置”的占位符，便于识别尚未执行过框选。
-    return {
-        "top_left": {
-            "x": -1,
-            "y": -1,
-        },
-        "bottom_right": {
-            "x": -1,
-            "y": -1,
-        },
-        "width": -1,
-        "height": -1,
-    }
-
-
-def _get_int_value(data: dict[str, object], key: str) -> int | None:
-    value = data.get(key)
-    if not isinstance(value, int):
-        return None
-
-    return value
 
 
 def _build_screen_mappings(screenshotter: mss.MSS) -> list[_ScreenMapping]:

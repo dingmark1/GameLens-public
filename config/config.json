@@ -1,14 +1,14 @@
 {
   "selection_region": {
     "top_left": {
-      "x": 554,
-      "y": 675
+      "x": 556,
+      "y": 679
     },
     "bottom_right": {
-      "x": 1238,
-      "y": 833
+      "x": 1205,
+      "y": 818
     },
-    "width": 685,
-    "height": 159
+    "width": 650,
+    "height": 140
   }
 }

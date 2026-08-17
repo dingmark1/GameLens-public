@@ -3,7 +3,7 @@ import sys
 from PyQt6.QtWidgets import QApplication
 
 from ui.main_window import MainWindow
-from ui.screen_region_selector import reset_selection_config
+from ui.screen_region_selector import reset_selection_rect_memory
 
 
 def main() -> int:
@@ -12,8 +12,9 @@ def main() -> int:
     # - sys.argv 用于接收并传递命令行参数（如平台参数等）
     app = QApplication(sys.argv)
 
-    # 每次启动时重置框选区域，确保后续识别不会误用上次缓存坐标。
-    reset_selection_config()
+    # 每次启动时清空进程内的框选缓存，确保后续识别不会误用上次运行残留的坐标。
+    # 由于框选区域现在只保存在内存里，这一步不会碰触磁盘配置文件。
+    reset_selection_rect_memory()
 
     # 创建主窗口实例，窗口的标题、尺寸、居中逻辑在 MainWindow 内完成。
     window = MainWindow()
