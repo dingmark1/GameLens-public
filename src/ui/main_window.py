@@ -27,6 +27,7 @@ from core.translator import (
 )
 from memory.conversation_memory import (
     append_ocr_dialog_result,
+    clear_conversation_memory,
     is_duplicate_ocr_dialog_result,
 )
 
@@ -136,6 +137,8 @@ class MainWindow(QMainWindow):
     - 显示和更新界面状态；
     - 在后台线程中完成耗时任务，保证交互流畅。
     """
+    clear_memory_requested = pyqtSignal()
+
     def __init__(self) -> None:
         # 先调用父类构造函数，完成 QMainWindow 的底层初始化，包含 Qt 对象树、事件循环等基础设施。
         super().__init__()
@@ -202,6 +205,10 @@ class MainWindow(QMainWindow):
         )
         self.language_combo_box.setFixedSize(120, 32)
 
+        self.clear_memory_button = QPushButton("清空记忆", self)
+        self.clear_memory_button.clicked.connect(self._on_clear_memory_button_clicked)
+        self.clear_memory_button.setFixedSize(120, 32)
+
         self.recognition_mode_combo_box = QComboBox(self)
         self.recognition_mode_combo_box.addItem("单次识别", False)
         self.recognition_mode_combo_box.addItem("循环识别", True)
@@ -210,8 +217,21 @@ class MainWindow(QMainWindow):
             self._on_recognition_mode_combo_box_changed
         )
         self.recognition_mode_combo_box.setFixedSize(120, 32)
-        combo_group_layout.addWidget(self.language_combo_box, alignment=Qt.AlignmentFlag.AlignCenter)
-        combo_group_layout.addWidget(self.recognition_mode_combo_box, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        language_column_layout = QVBoxLayout()
+        language_column_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        language_column_layout.setSpacing(8)
+        language_column_layout.addWidget(
+            self.language_combo_box, alignment=Qt.AlignmentFlag.AlignCenter
+        )
+        language_column_layout.addWidget(
+            self.clear_memory_button, alignment=Qt.AlignmentFlag.AlignCenter
+        )
+
+        combo_group_layout.addLayout(language_column_layout)
+        combo_group_layout.addWidget(
+            self.recognition_mode_combo_box, alignment=Qt.AlignmentFlag.AlignCenter
+        )
         layout.addLayout(combo_group_layout)
 
         # UI 状态机：idle 表示可接收用户操作，selecting/recognizing 表示当前正处于前台交互或后台识别流程。
@@ -238,6 +258,7 @@ class MainWindow(QMainWindow):
         self._auto_recognition_timer = QTimer(self)
         self._auto_recognition_timer.setInterval(4000)
         self._auto_recognition_timer.timeout.connect(self._on_auto_recognition_timer_timeout)
+        self.clear_memory_requested.connect(self._clear_memory_history)
 
         # 根据初始状态更新按钮启用状态，并在后台启动 OCR 预热。
         set_ocr_language("en")
@@ -409,6 +430,13 @@ class MainWindow(QMainWindow):
 
         self._wait_for_ocr_thread_if_needed()
         set_ocr_language(selected_lang)
+
+    def _on_clear_memory_button_clicked(self) -> None:
+        self.clear_memory_requested.emit()
+
+    def _clear_memory_history(self) -> None:
+        clear_conversation_memory()
+        print("对话记忆已清空")
 
     def _start_auto_recognition(self) -> None:
         if not self._auto_recognition_enabled:

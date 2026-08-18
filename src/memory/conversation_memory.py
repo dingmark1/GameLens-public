@@ -5,7 +5,7 @@ from typing import Any
 
 from langchain_classic.memory.buffer_window import ConversationBufferWindowMemory
 
-_MEMORY_WINDOW_SIZE = 10
+from core.app_config import _MEMORY_WINDOW_SIZE
 _DEFAULT_NARRATOR_NAME = "旁白"
 
 _conversation_memory = ConversationBufferWindowMemory(
@@ -111,3 +111,9 @@ def get_recent_conversation_records() -> list[str]:
     """返回窗口内最近的记录（最多 10 条）。"""
     with _conversation_lock:
         return [message.content for message in _conversation_memory.chat_memory.messages]
+
+
+def clear_conversation_memory() -> None:
+    """清空对话历史。"""
+    with _conversation_lock:
+        _conversation_memory.chat_memory.clear()

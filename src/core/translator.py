@@ -31,19 +31,18 @@ if __package__ in (None, ""):
         sys.path.insert(0, str(_SRC_DIR))
 
 import requests
+from core.app_config import DEEPSEEK_API_KEY
+from memory.conversation_memory import get_recent_conversation_records
 
 
 # ============================================================
 # 配置区（测试用硬编码，后续迁移到环境变量 / 配置文件）
 # ============================================================
 
-#  替换为真实 DeepSeek API Key
-DEEPSEEK_API_KEY = "sk-5fa89a3596d543e48fd07445a467af14"
-
 # DeepSeek 官方 OpenAI 兼容接口地址
 DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
 
-# 模型选择：deepseek-chat / deepseek-reasoner
+# 模型选择
 DEEPSEEK_MODEL = "deepseek-chat"
 
 # 默认翻译目标语言
@@ -69,7 +68,7 @@ _SYSTEM_PROMPT_TEMPLATE = """
 - dialog：对白列表，每个元素是一句或一段角色对白，需要逐条翻译成 __TARGET_LANG__。
 - addition：附加信息字典。包含若干项辅助信息。
 
-你必须只返回一个 JSON 对象，字段与输入完全一致：
+你必须只返回一个 JSON 对象，字段与输入完全一致，addition字段保持为空即可：
 {"name": "...", "dialog": [...], "addition": {...}}
 
 严格要求：
@@ -77,9 +76,10 @@ _SYSTEM_PROMPT_TEMPLATE = """
 2. dialog 的条数和顺序必须与输入保持一致。
 3. 翻译保持游戏对白风格，自然流畅，不添加原文没有的内容。
 4. 若输入中某字段为空（如 name 为 null），输出中保持 null 或空字符串。
-5. 提供的文本中可能出现笔误与非标准用法，请尽量理解原意并翻译，而不是逐字逐句直译，对于俚语更加不可直译。
+5. 提供的文本中可能出现笔误与非标准用法，请尽量理解原意并翻译，贴合中文口语和游戏感。
 6. 提供的文本中通常只包含一种语言，对于意义不明的语句，可以视作干扰，进行舍弃
 7. 如果 addition 中包含 "history" 字段（它是一个列表，每条格式为"角色名：对话原文"）请参考这些历史对话来理解当前句子的语境，特别注意人称代词（我/你/他/她）的一致性。
+8. 对于直译与历史对话无明显关联的文本，优先考虑是否为俚语或有隐含意义。
 """
 
 
@@ -96,6 +96,8 @@ def _build_user_prompt(result: dict[str, Any]) -> str:
     name = raw_name if isinstance(raw_name, str) and raw_name.strip() else ""
     dialog = raw_dialog if isinstance(raw_dialog, list) else []
     addition = raw_addition if isinstance(raw_addition, dict) else {}
+    addition = dict(addition)
+    addition["history"] = get_recent_conversation_records()
 
     payload = {
         "name": name,
