@@ -21,12 +21,13 @@ _ocr_engine: PaddleOCR | None = None
 _current_lang = "en"
 _ocr_device = "cpu"
 _prewarm_device_logged = False
-ENABLE_OCR_PREPROCESS = False  # 是否启用 OCR 前的图像预处理，默认关闭以减少额外开销。
+ENABLE_OCR_PREPROCESS = True  # 是否启用 OCR 前的图像预处理，默认关闭以减少额外开销。
 ENABLE_OCR_SLICE = True  # 是否启用大图切片识别，默认开启以改善稀疏小字检测效果。
 OCR_SLICE_MIN_LONG_EDGE = 1000  # 长边不足该值时跳过切片，减少不必要的额外开销。
 OCR_SLICE_MIN_SHORT_EDGE = 400  # 短边不足该值时跳过切片，避免在小图上过度分片。
 # RLock 用于保护全局引擎实例与识别过程，确保多线程下不会出现竞争条件。
 _ocr_lock = RLock()
+TOP_PROXIMITY_THRESHOLD = 0.15  # 第一行文本的纵向位置比例阈值，低于该值通常认为是人名。
 
 
 class OcrTextBlock(TypedDict):
@@ -78,9 +79,9 @@ def get_ocr_engine() -> PaddleOCR:
                 lang=_current_lang,
                 device=_ocr_device,
                 use_textline_orientation=False,  # 替代 use_angle_cls
-                det_db_unclip_ratio=1.8,
+                det_db_unclip_ratio=2.0,
                 det_db_box_thresh=0.5,
-                det_db_thresh=0.7,
+                det_db_thresh=0.3,
             )
 
         return _ocr_engine
@@ -395,7 +396,7 @@ def format_dialog_result(text_blocks: list[OcrTextBlock]) -> OcrDialogResult:
 
     first_y_ratio = first_block["y_ratio"]
     # 第一行不含冒号时，利用纵向位置判断其是否贴近区域顶部；贴近顶部通常是人名。
-    has_top_name = math.isfinite(first_y_ratio) and first_y_ratio < 0.15
+    has_top_name = math.isfinite(first_y_ratio) and first_y_ratio < TOP_PROXIMITY_THRESHOLD
 
     if has_top_name:
         dialog_lines = [block["text"] for block in text_blocks[1:]]
