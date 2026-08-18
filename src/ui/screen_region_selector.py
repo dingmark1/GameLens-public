@@ -10,6 +10,8 @@ from PyQt6.QtWidgets import QPushButton, QWidget
 import mss
 from PIL import Image, ImageFilter
 
+from core.app_config import TOP_PROXIMITY_THRESHOLD
+
 _selection_rect_cache: QRect | None = None
 
 # 该模块负责“框选屏幕区域”的全部交互与数据处理：
@@ -116,6 +118,16 @@ class ScreenSelectionOverlay(QWidget):
         pen = QPen(QColor(0, 170, 255), 2, Qt.PenStyle.DashLine)
         painter.setPen(pen)
         painter.drawRect(selection_rect.adjusted(0, 0, -1, -1))
+
+        top_threshold_y = selection_rect.top() + round(
+            selection_rect.height() * TOP_PROXIMITY_THRESHOLD
+        )
+        painter.drawLine(
+            selection_rect.left(),
+            top_threshold_y,
+            selection_rect.right() - 1,
+            top_threshold_y,
+        )
 
     def _current_local_selection_rect(self) -> QRect | None:
         # 把全局坐标转换为当前覆盖层本地坐标，从而计算真实绘制矩形。

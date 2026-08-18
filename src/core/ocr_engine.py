@@ -6,8 +6,10 @@ from tempfile import NamedTemporaryFile
 from threading import RLock
 from typing import TypedDict
 
+import cv2
 import paddle
 from paddleocr import PaddleOCR
+import numpy as np
 from PIL import Image, ImageOps
 
 from core.app_config import ENABLE_OCR_PREPROCESS, TOP_PROXIMITY_THRESHOLD
@@ -79,7 +81,7 @@ def get_ocr_engine() -> PaddleOCR:
                 lang=_current_lang,
                 device=_ocr_device,
                 use_textline_orientation=False,  # 替代 use_angle_cls
-                det_db_unclip_ratio=2.0,
+                det_db_unclip_ratio=1.0,
                 det_db_box_thresh=0.3,
                 det_db_thresh=0.3,
             )
@@ -232,7 +234,10 @@ def _preprocess_image(image_path: str | Path) -> Path:
 
     with Image.open(input_path) as image:
         grayscale_image = ImageOps.grayscale(image)
-        equalized_image = ImageOps.equalize(grayscale_image)
+        grayscale_array = np.array(grayscale_image)
+        denoised_array = cv2.bilateralFilter(grayscale_array, d=9, sigmaColor=75, sigmaSpace=75)
+        denoised_image = Image.fromarray(denoised_array)
+        equalized_image = ImageOps.equalize(denoised_image)
 
         with NamedTemporaryFile(suffix=".png", delete=False) as temporary_file:
             processed_path = Path(temporary_file.name)
@@ -257,10 +262,10 @@ def _build_slice_config(image_width: int, image_height: int) -> dict[str, int] |
     horizontal_stride = min(800, max(300, image_width // 3))
     vertical_stride = min(600, max(200, image_height // 3))
     # 固定阈值更稳定，对截屏场景 30-50px 通常合适，或者自适应
-    # merge_x_thres = 40
-    # merge_y_thres = 40
-    merge_x_thres = min(64, max(16, horizontal_stride // 30))
-    merge_y_thres = min(64, max(16, vertical_stride // 30))
+    merge_x_thres = 40
+    merge_y_thres = 40
+    # merge_x_thres = min(64, max(16, horizontal_stride // 30))
+    # merge_y_thres = min(64, max(16, vertical_stride // 30))
     
 
     return {
