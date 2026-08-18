@@ -14,12 +14,12 @@ from PIL import Image, ImageOps
 
 from core.app_config import ENABLE_OCR_PREPROCESS, TOP_PROXIMITY_THRESHOLD
 
-
-# OCR 引擎模块用于统一封装 PaddleOCR 的生命周期与识别流程。
-# 设计目标是：
-# 1. 只创建一个全局 OCR 引擎实例，避免频繁初始化带来的性能损耗；
-# 2. 对多线程访问加锁，确保 UI 或后台线程不会同时修改同一个引擎对象；
-# 3. 识别函数统一提取有效文本，并返回干净的字符串列表供上层业务使用。
+# PaddleOCR 识别封装模块。
+# 这里统一管理引擎初始化、图像预处理、切片识别和结果整理，避免上层业务直接接触底层细节。
+# 核心原则：
+# 1. 全局单例 OCR 引擎，减少重复初始化开销；
+# 2. 识别过程加锁，避免多线程同时操作同一个引擎；
+# 3. 预处理只做轻量增强，避免过度改变截图内容。
 
 _ocr_engine: PaddleOCR | None = None
 _current_lang = "en"
@@ -226,23 +226,27 @@ def _join_dialog_lines(text_lines: list[str]) -> str:
 
 
 def _preprocess_image(image_path: str | Path) -> Path:
-    """对输入图像做 OCR 前预处理。"""
+    """对输入图像做 OCR 前预处理。
+
+    这里只保留灰度化和双边滤波，不再做直方图均衡化，避免过度拉伸截图中的噪点。
+    """
 
     input_path = Path(image_path)
     if not ENABLE_OCR_PREPROCESS:
         return input_path
 
     with Image.open(input_path) as image:
+        # 先转灰度，减少颜色信息对 OCR 的干扰。
         grayscale_image = ImageOps.grayscale(image)
+        # 再做轻度去噪，保留笔画边缘。
         grayscale_array = np.array(grayscale_image)
         denoised_array = cv2.bilateralFilter(grayscale_array, d=9, sigmaColor=75, sigmaSpace=75)
         denoised_image = Image.fromarray(denoised_array)
-        equalized_image = ImageOps.equalize(denoised_image)
 
         with NamedTemporaryFile(suffix=".png", delete=False) as temporary_file:
             processed_path = Path(temporary_file.name)
 
-        equalized_image.save(processed_path)
+        denoised_image.save(processed_path)
 
     return processed_path
 

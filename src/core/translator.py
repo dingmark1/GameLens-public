@@ -146,7 +146,7 @@ def _call_deepseek_api(system_prompt: str, user_prompt: str) -> str:
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
-        "temperature": 0.3,
+        "temperature": 1.2,
         # DeepSeek 支持 JSON 输出模式
         "response_format": {"type": "json_object"},
         "stream": False,
