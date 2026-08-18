@@ -22,6 +22,7 @@ from core.ocr_engine import (
     set_ocr_language,
 )
 from core.translator import TranslationError, translate_dialog_result
+from memory.conversation_memory import append_ocr_dialog_result
 
 from ui.screen_region_selector import (
     SelectionOutlineOverlay,
@@ -58,6 +59,7 @@ class OcrRecognitionWorker(QObject):
             recognized_texts = recognize_texts(self._image_path)
             # 先拿到带坐标的文本块，再在同一处完成“人名 / 对话”归一化，方便后续统一消费。
             structured_result = format_dialog_result(recognized_texts)
+            append_ocr_dialog_result(structured_result)
         except (RuntimeError, ValueError, TypeError, OSError) as exc:
             # 把错误信息以信号形式发回主窗口，方便弹出提示框并恢复 UI 状态。
             self.failed.emit(f"OCR 识别失败: {exc}")
@@ -295,7 +297,16 @@ class MainWindow(QMainWindow):
         self._selection_outline_overlay.show()
         self._show_selection_cancel_button_overlay(selection_rect)
 
-        print("框选区域已保存")
+        left = selection_rect.left()
+        top = selection_rect.top()
+        right = selection_rect.right()
+        bottom = selection_rect.bottom()
+        width = selection_rect.width()
+        height = selection_rect.height()
+        print(
+            f"框选区域已保存，左上角=({left}, {top})，右下角=({right}, {bottom})，"
+            f"宽={width}，高={height}"
+        )
         self._set_ui_state("idle")
         self._show_window_in_front()
 
