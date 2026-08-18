@@ -21,6 +21,10 @@ _ocr_engine: PaddleOCR | None = None
 _current_lang = "en"
 _ocr_device = "cpu"
 _prewarm_device_logged = False
+ENABLE_OCR_PREPROCESS = False  # 是否启用 OCR 前的图像预处理，默认关闭以减少额外开销。
+ENABLE_OCR_SLICE = True  # 是否启用大图切片识别，默认开启以改善稀疏小字检测效果。
+OCR_SLICE_MIN_LONG_EDGE = 1000  # 长边不足该值时跳过切片，减少不必要的额外开销。
+OCR_SLICE_MIN_SHORT_EDGE = 400  # 短边不足该值时跳过切片，避免在小图上过度分片。
 # RLock 用于保护全局引擎实例与识别过程，确保多线程下不会出现竞争条件。
 _ocr_lock = RLock()
 
@@ -74,6 +78,9 @@ def get_ocr_engine() -> PaddleOCR:
                 lang=_current_lang,
                 device=_ocr_device,
                 use_textline_orientation=False,  # 替代 use_angle_cls
+                det_db_unclip_ratio=1.8,
+                det_db_box_thresh=0.5,
+                det_db_thresh=0.7,
             )
 
         return _ocr_engine
@@ -219,6 +226,9 @@ def _preprocess_image(image_path: str | Path) -> Path:
     """对输入图像做 OCR 前预处理。"""
 
     input_path = Path(image_path)
+    if not ENABLE_OCR_PREPROCESS:
+        return input_path
+
     with Image.open(input_path) as image:
         grayscale_image = ImageOps.grayscale(image)
         equalized_image = ImageOps.equalize(grayscale_image)
@@ -231,6 +241,35 @@ def _preprocess_image(image_path: str | Path) -> Path:
     return processed_path
 
 
+def _build_slice_config(image_width: int, image_height: int) -> dict[str, int] | None:
+    """按图像尺寸动态生成 PaddleOCR 的 slice 参数；小图返回 None。"""
+
+    if not ENABLE_OCR_SLICE:
+        return None
+
+    long_edge = max(image_width, image_height)
+    short_edge = min(image_width, image_height)
+    if long_edge < OCR_SLICE_MIN_LONG_EDGE or short_edge < OCR_SLICE_MIN_SHORT_EDGE:
+        return None
+
+    # 步长设为 1/2 到 2/3 的切片大小，保证 1/3 到 1/2 的重叠
+    horizontal_stride = min(800, max(300, image_width // 3))
+    vertical_stride = min(600, max(200, image_height // 3))
+    # 固定阈值更稳定，对截屏场景 30-50px 通常合适，或者自适应
+    # merge_x_thres = 40
+    # merge_y_thres = 40
+    merge_x_thres = min(64, max(16, horizontal_stride // 30))
+    merge_y_thres = min(64, max(16, vertical_stride // 30))
+    
+
+    return {
+        "horizontal_stride": horizontal_stride,
+        "vertical_stride": vertical_stride,
+        "merge_x_thres": merge_x_thres,
+        "merge_y_thres": merge_y_thres,
+    }
+
+
 def recognize_texts(image_path: str | Path) -> list[OcrTextBlock]:
     """对指定图像执行 OCR，并返回带坐标信息的文本块列表。
 
@@ -240,16 +279,26 @@ def recognize_texts(image_path: str | Path) -> list[OcrTextBlock]:
     - 若 OCR 结果中某页没有文字，则跳过该页。
     """
     processed_image_path = _preprocess_image(image_path)
+    should_cleanup = ENABLE_OCR_PREPROCESS
 
     try:
         with Image.open(processed_image_path) as image:
+            image_width = int(image.width)
             image_height = float(image.height)
         if image_height <= 0:
             image_height = 1.0
+        if image_width <= 0:
+            image_width = 1
+
+        slice_config = _build_slice_config(image_width=image_width, image_height=int(image_height))
 
         with _ocr_lock:
             # 整个 predict 调用都在锁内进行，强制串行化，防止不同线程同时使用同一引擎实例。
-            ocr_result = get_ocr_engine().predict(str(processed_image_path))
+            ocr_engine = get_ocr_engine()
+            if slice_config is None:
+                ocr_result = ocr_engine.predict(str(processed_image_path))
+            else:
+                ocr_result = ocr_engine.predict(str(processed_image_path), slice=slice_config)
 
         recognized_texts: list[dict[str, object]] = []
 
@@ -291,7 +340,7 @@ def recognize_texts(image_path: str | Path) -> list[OcrTextBlock]:
                         }
                     )
     finally:
-        if processed_image_path.exists():
+        if should_cleanup and processed_image_path.exists():
             processed_image_path.unlink()
 
     recognized_texts.sort(
@@ -346,7 +395,7 @@ def format_dialog_result(text_blocks: list[OcrTextBlock]) -> OcrDialogResult:
 
     first_y_ratio = first_block["y_ratio"]
     # 第一行不含冒号时，利用纵向位置判断其是否贴近区域顶部；贴近顶部通常是人名。
-    has_top_name = math.isfinite(first_y_ratio) and first_y_ratio < 0.1
+    has_top_name = math.isfinite(first_y_ratio) and first_y_ratio < 0.15
 
     if has_top_name:
         dialog_lines = [block["text"] for block in text_blocks[1:]]
