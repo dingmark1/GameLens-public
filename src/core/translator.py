@@ -61,7 +61,8 @@ class TranslationError(RuntimeError):
 # Prompt 构建
 # ============================================================
 
-_SYSTEM_PROMPT_TEMPLATE = """你是一个专业的游戏汉化翻译引擎。
+_SYSTEM_PROMPT_TEMPLATE = """
+你是一个专业的游戏汉化翻译引擎。
 
 我会发送一个 JSON 对象，包含以下字段：
 - name：说话人名称（姓名、角色名或简称），需要翻译成 __TARGET_LANG__；如果是人名，请按目标语言习惯音译或意译。
@@ -76,8 +77,10 @@ _SYSTEM_PROMPT_TEMPLATE = """你是一个专业的游戏汉化翻译引擎。
 2. dialog 的条数和顺序必须与输入保持一致。
 3. 翻译保持游戏对白风格，自然流畅，不添加原文没有的内容。
 4. 若输入中某字段为空（如 name 为 null），输出中保持 null 或空字符串。
-5. 提供的文本中可能出现笔误与非标准用法，请尽量理解原意并翻译为中文，而不是逐字逐句直译。
-6. 提供的文本中通常只包含一种语言，对于意义不明的语句，可以视作干扰，进行舍弃"""
+5. 提供的文本中可能出现笔误与非标准用法，请尽量理解原意并翻译，而不是逐字逐句直译，对于俚语更加不可直译。
+6. 提供的文本中通常只包含一种语言，对于意义不明的语句，可以视作干扰，进行舍弃
+7. 如果 addition 中包含 "history" 字段（它是一个列表，每条格式为"角色名：对话原文"）请参考这些历史对话来理解当前句子的语境，特别注意人称代词（我/你/他/她）的一致性。
+"""
 
 
 
@@ -101,6 +104,28 @@ def _build_user_prompt(result: dict[str, Any]) -> str:
     }
 
     return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+def has_translatable_content(result: dict[str, Any]) -> bool:
+    """判断 OCR 结果里是否存在可翻译内容。"""
+
+    raw_name = result.get("name")
+    if isinstance(raw_name, str) and raw_name.strip():
+        return True
+
+    raw_dialog = result.get("dialog")
+    if not isinstance(raw_dialog, list):
+        return False
+
+    for line in raw_dialog:
+        if line is None:
+            continue
+        if not isinstance(line, str):
+            line = str(line)
+        if line.strip():
+            return True
+
+    return False
 
 
 # ============================================================
@@ -270,6 +295,18 @@ def translate_dialog_result(
     """将 OCR 结构化结果交给 DeepSeek 翻译，返回同构字典。"""
     if not isinstance(result, dict):
         raise TypeError("translate_dialog_result 需要一个 dict（OcrDialogResult）")
+
+    if not has_translatable_content(result):
+        raw_addition = result.get("addition", {})
+        if not isinstance(raw_addition, dict):
+            raw_addition = {}
+
+        print("OCR 结果为空，跳过翻译")
+        return {
+            "name": None,
+            "dialog": [],
+            "addition": dict(raw_addition),
+        }
 
     system_prompt = _build_system_prompt(target_lang)
     user_prompt = _build_user_prompt(result)

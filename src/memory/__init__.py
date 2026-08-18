@@ -3,6 +3,7 @@ from memory.conversation_memory import (
     append_ocr_dialog_result,
     get_conversation_memory,
     get_recent_conversation_records,
+    is_duplicate_ocr_dialog_result,
 )
 
 __all__ = [
@@ -10,4 +11,5 @@ __all__ = [
     "append_ocr_dialog_result",
     "get_conversation_memory",
     "get_recent_conversation_records",
+    "is_duplicate_ocr_dialog_result",
 ]

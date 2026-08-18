@@ -156,7 +156,7 @@ class SelectionOutlineOverlay(QWidget):
 
 
 class SelectionCancelButtonOverlay(QPushButton):
-    """显示在已选区域右上角的取消按钮。"""
+    """显示在已选区域右上角外侧的取消按钮。"""
 
     cancel_requested = pyqtSignal()
 
@@ -195,8 +195,9 @@ class SelectionCancelButtonOverlay(QPushButton):
             """
         )
 
-        button_x = selection_rect.left() + selection_rect.width() - self._button_size - self._margin
-        button_y = selection_rect.top() + self._margin
+        # 按钮放到绿色虚线框外侧，避免遮挡选区边框内部内容。
+        button_x = selection_rect.right() + self._margin + 1
+        button_y = selection_rect.top() - self._button_size - self._margin
         self.move(button_x, button_y)
 
 
@@ -255,7 +256,7 @@ class TranslationOverlay(QWidget):
 
     def _build_dialog_rect(self) -> QRect:
         left = 12
-        top = self._name_rect.bottom() + 10
+        top = self._name_rect.bottom() + 4
         width = max(120, self.width() - 24)
         height = max(40, self.height() - top - 12)
         return QRect(left, top, width, height)

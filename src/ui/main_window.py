@@ -5,7 +5,6 @@ from pathlib import Path
 from PyQt6.QtCore import QObject, QThread, QTimer, QRect, Qt, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QCloseEvent
 from PyQt6.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QHBoxLayout,
     QMainWindow,
@@ -21,8 +20,15 @@ from core.ocr_engine import (
     recognize_texts,
     set_ocr_language,
 )
-from core.translator import TranslationError, translate_dialog_result
-from memory.conversation_memory import append_ocr_dialog_result
+from core.translator import (
+    TranslationError,
+    has_translatable_content,
+    translate_dialog_result,
+)
+from memory.conversation_memory import (
+    append_ocr_dialog_result,
+    is_duplicate_ocr_dialog_result,
+)
 
 from ui.screen_region_selector import (
     SelectionOutlineOverlay,
@@ -47,10 +53,11 @@ class OcrRecognitionWorker(QObject):
     finished = pyqtSignal(dict)
     failed = pyqtSignal(str)
 
-    def __init__(self, image_path: Path) -> None:
+    def __init__(self, image_path: Path, skip_duplicate_check: bool) -> None:
         # image_path 指向被识别的屏幕截图文件； OCR 引擎需要在此图像基础上抽取文字。
         super().__init__()
         self._image_path = image_path
+        self._skip_duplicate_check = skip_duplicate_check
 
     @pyqtSlot()
     def run(self) -> None:
@@ -59,6 +66,24 @@ class OcrRecognitionWorker(QObject):
             recognized_texts = recognize_texts(self._image_path)
             # 先拿到带坐标的文本块，再在同一处完成“人名 / 对话”归一化，方便后续统一消费。
             structured_result = format_dialog_result(recognized_texts)
+            if self._skip_duplicate_check and is_duplicate_ocr_dialog_result(structured_result):
+                print("[定时识别] 识别内容与历史对话重复，跳过翻译")
+                self.finished.emit(
+                    {
+                        "skipped": True,
+                        "ocr_blocks": recognized_texts,
+                    }
+                )
+                return
+            if not has_translatable_content(structured_result):
+                print("[定时识别] OCR 结果为空，跳过翻译")
+                self.finished.emit(
+                    {
+                        "skipped": True,
+                        "ocr_blocks": recognized_texts,
+                    }
+                )
+                return
             append_ocr_dialog_result(structured_result)
         except (RuntimeError, ValueError, TypeError, OSError) as exc:
             # 把错误信息以信号形式发回主窗口，方便弹出提示框并恢复 UI 状态。
@@ -163,7 +188,7 @@ class MainWindow(QMainWindow):
         )
         layout.addLayout(recognize_button_row)
 
-        # 组合2：语言选择框与勾选框固定大小，并左右组合排列。
+        # 组合2：语言选择框与识别模式选择框固定大小，并左右组合排列。
         combo_group_layout = QHBoxLayout()
         combo_group_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         combo_group_layout.setSpacing(12)
@@ -177,13 +202,16 @@ class MainWindow(QMainWindow):
         )
         self.language_combo_box.setFixedSize(120, 32)
 
-        self.auto_recognition_checkbox = QCheckBox("循环识别", self)
-        self.auto_recognition_checkbox.setChecked(False)
-        self.auto_recognition_checkbox.stateChanged.connect(
-            self._on_auto_recognition_checkbox_state_changed
+        self.recognition_mode_combo_box = QComboBox(self)
+        self.recognition_mode_combo_box.addItem("单次识别", False)
+        self.recognition_mode_combo_box.addItem("循环识别", True)
+        self.recognition_mode_combo_box.setCurrentIndex(0)
+        self.recognition_mode_combo_box.currentIndexChanged.connect(
+            self._on_recognition_mode_combo_box_changed
         )
+        self.recognition_mode_combo_box.setFixedSize(120, 32)
         combo_group_layout.addWidget(self.language_combo_box, alignment=Qt.AlignmentFlag.AlignCenter)
-        combo_group_layout.addWidget(self.auto_recognition_checkbox, alignment=Qt.AlignmentFlag.AlignCenter)
+        combo_group_layout.addWidget(self.recognition_mode_combo_box, alignment=Qt.AlignmentFlag.AlignCenter)
         layout.addLayout(combo_group_layout)
 
         # UI 状态机：idle 表示可接收用户操作，selecting/recognizing 表示当前正处于前台交互或后台识别流程。
@@ -213,7 +241,8 @@ class MainWindow(QMainWindow):
 
         # 根据初始状态更新按钮启用状态，并在后台启动 OCR 预热。
         set_ocr_language("en")
-        self._auto_recognition_enabled = self.auto_recognition_checkbox.isChecked()
+        mode_is_loop = self.recognition_mode_combo_box.currentData()
+        self._auto_recognition_enabled = bool(mode_is_loop)
         self._update_button_states()
         self._start_ocr_prewarm()
 
@@ -366,8 +395,12 @@ class MainWindow(QMainWindow):
 
         self._start_auto_recognition()
 
-    def _on_auto_recognition_checkbox_state_changed(self, _state: int) -> None:
-        self._auto_recognition_enabled = self.auto_recognition_checkbox.isChecked()
+    def _on_recognition_mode_combo_box_changed(self, _index: int) -> None:
+        mode_is_loop = self.recognition_mode_combo_box.currentData()
+        if not isinstance(mode_is_loop, bool):
+            return
+
+        self._auto_recognition_enabled = mode_is_loop
 
     def _on_language_combo_box_changed(self, _index: int) -> None:
         selected_lang = self.language_combo_box.currentData()
@@ -399,7 +432,7 @@ class MainWindow(QMainWindow):
             self._is_recognition_running = False
 
         print("[定时识别] 自动识别已停止")
-        self.auto_recognition_checkbox.setEnabled(True)
+        self.recognition_mode_combo_box.setEnabled(True)
         self._update_button_states()
 
     def _wait_for_ocr_thread_if_needed(self) -> None:
@@ -458,7 +491,7 @@ class MainWindow(QMainWindow):
             raise RuntimeError("OCR 识别线程仍在运行，无法启动新任务")
 
         self._ocr_thread = QThread(self)
-        self._ocr_worker = OcrRecognitionWorker(screenshot_path)
+        self._ocr_worker = OcrRecognitionWorker(screenshot_path, self._is_auto_recognizing)
         self._ocr_worker.moveToThread(self._ocr_thread)
 
         # 当线程启动后，执行 OCR 工作对象的 run()；识别结束后触发回调并关闭线程。
@@ -474,6 +507,9 @@ class MainWindow(QMainWindow):
 
     def _on_ocr_recognition_finished(self, result_payload: dict) -> None:
         self._is_recognition_running = False
+        if result_payload.get("skipped"):
+            self._cleanup_current_ocr_screenshot_path()
+            return
         self._show_translation_overlay(result_payload)
 
     def _on_ocr_recognition_failed(self, error_message: str) -> None:
@@ -584,14 +620,14 @@ class MainWindow(QMainWindow):
         if self._is_auto_recognizing:
             self.select_screen_region_button.setEnabled(False)
             self.recognize_selected_region_text_button.setEnabled(True)
-            self.auto_recognition_checkbox.setEnabled(False)
+            self.recognition_mode_combo_box.setEnabled(False)
             self.language_combo_box.setEnabled(False)
             self.recognize_selected_region_text_button.setText("停止识别")
             return
 
         self.select_screen_region_button.setEnabled(is_idle)
         self.recognize_selected_region_text_button.setEnabled(is_idle)
-        self.auto_recognition_checkbox.setEnabled(is_idle)
+        self.recognition_mode_combo_box.setEnabled(is_idle)
         self.language_combo_box.setEnabled(is_idle and self._ocr_thread is None)
         self.recognize_selected_region_text_button.setText("识别并翻译框选区域文字")
 
