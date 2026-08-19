@@ -32,6 +32,7 @@ from memory.conversation_memory import (
     clear_conversation_summary,
     is_duplicate_ocr_dialog_result,
 )
+from core.app_config import AUTO_RECOGNITION_INTERVAL_MS
 
 from ui.screen_region_selector import (
     SelectionOutlineOverlay,
@@ -274,7 +275,7 @@ class MainWindow(QMainWindow):
         self._is_recognition_running = False
         self._auto_recognition_enabled = False
         self._auto_recognition_timer = QTimer(self)
-        self._auto_recognition_timer.setInterval(4000)
+        self._auto_recognition_timer.setInterval(AUTO_RECOGNITION_INTERVAL_MS)
         self._auto_recognition_timer.timeout.connect(self._on_auto_recognition_timer_timeout)
         self.clear_memory_requested.connect(self._clear_memory_history)
         self.clear_summary_requested.connect(self._clear_summary_history)
@@ -474,7 +475,7 @@ class MainWindow(QMainWindow):
 
         self._is_auto_recognizing = True
         self._auto_recognition_timer.start()
-        print("[定时识别] 自动识别已启动，每 4 秒执行一次")
+        print("[定时识别] 自动识别已启动")
         self._update_button_states()
         self._perform_single_recognition()
 
