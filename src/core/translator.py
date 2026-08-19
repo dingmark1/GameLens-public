@@ -9,7 +9,7 @@ DeepSeek 翻译模块
 
 注意：
 - API Key 暂时硬编码，仅用于本地测试
-- addition 当前为空，但已在 prompt 与返回值中预留
+- addition 会附带 history 与 summary 等上下文信息
 """
 
 from __future__ import annotations
@@ -32,7 +32,10 @@ if __package__ in (None, ""):
 
 import requests
 from core.app_config import DEEPSEEK_API_KEY
-from memory.conversation_memory import get_recent_conversation_records
+from memory.conversation_memory import (
+    get_conversation_summary,
+    get_recent_conversation_records,
+)
 
 
 # ============================================================
@@ -61,25 +64,26 @@ class TranslationError(RuntimeError):
 # ============================================================
 
 _SYSTEM_PROMPT_TEMPLATE = """
-你是一个专业的游戏汉化翻译引擎。
+你是一个专业的游戏汉化翻译引擎。精通中英文化俚语。识别出英文俚语后，禁止直译。
 
 我会发送一个 JSON 对象，包含以下字段：
 - name：说话人名称（姓名、角色名或简称），需要翻译成 __TARGET_LANG__；如果是人名，请按目标语言习惯音译或意译。
 - dialog：对白列表，每个元素是一句或一段角色对白，需要逐条翻译成 __TARGET_LANG__。
-- addition：附加信息字典。包含若干项辅助信息。
+- addition：附加信息字典。包含若干项辅助信息，例如 history 和 summary。
 
-你必须只返回一个 JSON 对象，字段与输入完全一致，addition字段保持为空即可：
+你必须只返回一个 JSON 对象，字段与输入完全一致：
 {"name": "...", "dialog": [...], "addition": {...}}
 
 严格要求：
 1. 只输出 JSON 本身，不要输出任何解释、前后缀或 markdown 代码块。
 2. dialog 的条数和顺序必须与输入保持一致。
-3. 翻译保持游戏对白风格，自然流畅，不添加原文没有的内容。
+3. 只需要理解外文原意，自由发挥生成中文译文，不要与原文对应。对于每一句话，优先考虑是否为外语俚语或固定用法，并完全自由生成中文。
 4. 若输入中某字段为空（如 name 为 null），输出中保持 null 或空字符串。
-5. 提供的文本中可能出现笔误与非标准用法，请尽量理解原意并翻译，贴合中文口语和游戏感。
-6. 提供的文本中通常只包含一种语言，对于意义不明的语句，可以视作干扰，进行舍弃
-7. 如果 addition 中包含 "history" 字段（它是一个列表，每条格式为"角色名：对话原文"）请参考这些历史对话来理解当前句子的语境，特别注意人称代词（我/你/他/她）的一致性。
-8. 对于直译与历史对话无明显关联的文本，优先考虑是否为俚语或有隐含意义。
+5. 提供的文本中可能出现笔误与非标准用法，请尽量理解原意并翻译，贴合中文口语和游戏感。对于意义不明的错乱语句，可以视作干扰，进行舍弃。
+6. 如果 addition 中包含 "history" 字段（它是一个列表，每条格式为"角色名：对话原文"）请参考这些历史对话来理解当前句子的语境，特别注意人称代词（我/你/他/她）的一致性。
+7. 如果 addition 中包含 "summary" 字段（前情回顾文本），请结合它理解剧情背景和人物关系，确保语气、称谓与剧情脉络连续。
+8. 俚语、习语、隐喻、文化梗一律不直译，寻找中文功能对等的表达，译文须像中国人日常会说的话。情绪强度，须在译文中同等体现。原文中的文化特定元素（如特定动物、食物、节日、历史人物）若中文读者无感，则替换为中文语境中功能相近的元素
+9. 例如“I live in a den of snakes”是一个典型的俚语，请不要直译为“我住在蛇窝里”，而是根据上下文理解其含义并翻译为中文口语化的表达。
 """
 
 
@@ -98,6 +102,8 @@ def _build_user_prompt(result: dict[str, Any]) -> str:
     addition = raw_addition if isinstance(raw_addition, dict) else {}
     addition = dict(addition)
     addition["history"] = get_recent_conversation_records()
+    summary = get_conversation_summary()
+    addition["summary"] = summary if isinstance(summary, str) else ""
 
     payload = {
         "name": name,

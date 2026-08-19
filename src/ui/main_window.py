@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from PyQt6.QtCore import QObject, QThread, QTimer, QRect, Qt, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QCloseEvent
@@ -28,6 +29,7 @@ from core.translator import (
 from memory.conversation_memory import (
     append_ocr_dialog_result,
     clear_conversation_memory,
+    clear_conversation_summary,
     is_duplicate_ocr_dialog_result,
 )
 
@@ -85,7 +87,6 @@ class OcrRecognitionWorker(QObject):
                     }
                 )
                 return
-            append_ocr_dialog_result(structured_result)
         except (RuntimeError, ValueError, TypeError, OSError) as exc:
             # 把错误信息以信号形式发回主窗口，方便弹出提示框并恢复 UI 状态。
             self.failed.emit(f"OCR 识别失败: {exc}")
@@ -104,6 +105,7 @@ class OcrRecognitionWorker(QObject):
             {
                 "translation": translated_result,
                 "ocr_blocks": recognized_texts,
+                "ocr_result": structured_result,
             }
         )
 
@@ -138,6 +140,7 @@ class MainWindow(QMainWindow):
     - 在后台线程中完成耗时任务，保证交互流畅。
     """
     clear_memory_requested = pyqtSignal()
+    clear_summary_requested = pyqtSignal()
 
     def __init__(self) -> None:
         # 先调用父类构造函数，完成 QMainWindow 的底层初始化，包含 Qt 对象树、事件循环等基础设施。
@@ -209,6 +212,10 @@ class MainWindow(QMainWindow):
         self.clear_memory_button.clicked.connect(self._on_clear_memory_button_clicked)
         self.clear_memory_button.setFixedSize(120, 32)
 
+        self.clear_summary_button = QPushButton("清除摘要", self)
+        self.clear_summary_button.clicked.connect(self._on_clear_summary_button_clicked)
+        self.clear_summary_button.setFixedSize(120, 32)
+
         self.recognition_mode_combo_box = QComboBox(self)
         self.recognition_mode_combo_box.addItem("单次识别", False)
         self.recognition_mode_combo_box.addItem("循环识别", True)
@@ -226,6 +233,9 @@ class MainWindow(QMainWindow):
         )
         language_column_layout.addWidget(
             self.clear_memory_button, alignment=Qt.AlignmentFlag.AlignCenter
+        )
+        language_column_layout.addWidget(
+            self.clear_summary_button, alignment=Qt.AlignmentFlag.AlignCenter
         )
 
         combo_group_layout.addLayout(language_column_layout)
@@ -250,6 +260,7 @@ class MainWindow(QMainWindow):
         # OCR 预热线程：在应用启动后就开始加载模型，确保后续第一次识别更快。
         self._ocr_prewarm_thread: QThread | None = None
         self._ocr_prewarm_worker: OcrPrewarmWorker | None = None
+        self._pending_ocr_dialog_result: dict[str, Any] | None = None
         self._current_ocr_screenshot_path: Path | None = None
         # 自动识别状态：一个控制循环开关，一个防止任务重入。
         self._is_auto_recognizing = False
@@ -259,6 +270,7 @@ class MainWindow(QMainWindow):
         self._auto_recognition_timer.setInterval(4000)
         self._auto_recognition_timer.timeout.connect(self._on_auto_recognition_timer_timeout)
         self.clear_memory_requested.connect(self._clear_memory_history)
+        self.clear_summary_requested.connect(self._clear_summary_history)
 
         # 根据初始状态更新按钮启用状态，并在后台启动 OCR 预热。
         set_ocr_language("en")
@@ -434,9 +446,17 @@ class MainWindow(QMainWindow):
     def _on_clear_memory_button_clicked(self) -> None:
         self.clear_memory_requested.emit()
 
+    def _on_clear_summary_button_clicked(self) -> None:
+        self.clear_summary_requested.emit()
+
     def _clear_memory_history(self) -> None:
         clear_conversation_memory()
+        self._pending_ocr_dialog_result = None
         print("对话记忆已清空")
+
+    def _clear_summary_history(self) -> None:
+        clear_conversation_summary()
+        print("前情回顾已清空")
 
     def _start_auto_recognition(self) -> None:
         if not self._auto_recognition_enabled:
@@ -518,6 +538,15 @@ class MainWindow(QMainWindow):
         if self._ocr_thread is not None:
             raise RuntimeError("OCR 识别线程仍在运行，无法启动新任务")
 
+        pending_ocr_dialog_result = self._pending_ocr_dialog_result
+        if pending_ocr_dialog_result is not None:
+            try:
+                append_ocr_dialog_result(pending_ocr_dialog_result)
+            except (RuntimeError, TypeError, ValueError) as exc:
+                self._pending_ocr_dialog_result = pending_ocr_dialog_result
+                raise RuntimeError(f"追加上一轮原文到记忆失败: {exc}") from exc
+            self._pending_ocr_dialog_result = None
+
         self._ocr_thread = QThread(self)
         self._ocr_worker = OcrRecognitionWorker(screenshot_path, self._is_auto_recognizing)
         self._ocr_worker.moveToThread(self._ocr_thread)
@@ -538,6 +567,9 @@ class MainWindow(QMainWindow):
         if result_payload.get("skipped"):
             self._cleanup_current_ocr_screenshot_path()
             return
+        ocr_result = result_payload.get("ocr_result")
+        if isinstance(ocr_result, dict):
+            self._pending_ocr_dialog_result = ocr_result
         self._show_translation_overlay(result_payload)
 
     def _on_ocr_recognition_failed(self, error_message: str) -> None:
