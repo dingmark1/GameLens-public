@@ -64,50 +64,56 @@ class OcrRecognitionWorker(QObject):
 
     @pyqtSlot()
     def run(self) -> None:
+        current_thread = QThread.currentThread()
         try:
-            # OCR 是典型的阻塞型操作，必须在非 GUI 线程中执行，否则会导致 UI 失去响应。
-            recognized_texts = recognize_texts(self._image_path)
-            # 先拿到带坐标的文本块，再在同一处完成“人名 / 对话”归一化，方便后续统一消费。
-            structured_result = format_dialog_result(recognized_texts)
-            if self._skip_duplicate_check and is_duplicate_ocr_dialog_result(structured_result):
-                print("[定时识别] 识别内容与历史对话重复，跳过翻译")
-                self.finished.emit(
-                    {
-                        "skipped": True,
-                        "ocr_blocks": recognized_texts,
-                    }
-                )
+            try:
+                # OCR 是典型的阻塞型操作，必须在非 GUI 线程中执行，否则会导致 UI 失去响应。
+                recognized_texts = recognize_texts(self._image_path)
+                # 先拿到带坐标的文本块，再在同一处完成“人名 / 对话”归一化，方便后续统一消费。
+                structured_result = format_dialog_result(recognized_texts)
+                if self._skip_duplicate_check and is_duplicate_ocr_dialog_result(structured_result):
+                    print("[定时识别] 识别内容与历史对话重复，跳过翻译")
+                    self.finished.emit(
+                        {
+                            "skipped": True,
+                            "ocr_blocks": recognized_texts,
+                        }
+                    )
+                    return
+                if not has_translatable_content(structured_result):
+                    print("[定时识别] OCR 结果为空，跳过翻译")
+                    self.finished.emit(
+                        {
+                            "skipped": True,
+                            "ocr_blocks": recognized_texts,
+                        }
+                    )
+                    return
+            except (RuntimeError, ValueError, TypeError, OSError) as exc:
+                # 把错误信息以信号形式发回主窗口，方便弹出提示框并恢复 UI 状态。
+                self.failed.emit(f"OCR 识别失败: {exc}")
                 return
-            if not has_translatable_content(structured_result):
-                print("[定时识别] OCR 结果为空，跳过翻译")
-                self.finished.emit(
-                    {
-                        "skipped": True,
-                        "ocr_blocks": recognized_texts,
-                    }
-                )
+
+            try:
+                translated_result = translate_dialog_result(structured_result)
+            except TranslationError as exc:
+                self.failed.emit(f"翻译失败: {exc}")
                 return
-        except (RuntimeError, ValueError, TypeError, OSError) as exc:
-            # 把错误信息以信号形式发回主窗口，方便弹出提示框并恢复 UI 状态。
-            self.failed.emit(f"OCR 识别失败: {exc}")
-            return
+            except (RuntimeError, ValueError, TypeError, OSError) as exc:
+                self.failed.emit(f"翻译失败: {exc}")
+                return
 
-        try:
-            translated_result = translate_dialog_result(structured_result)
-        except TranslationError as exc:
-            self.failed.emit(f"翻译失败: {exc}")
-            return
-        except (RuntimeError, ValueError, TypeError, OSError) as exc:
-            self.failed.emit(f"翻译失败: {exc}")
-            return
-
-        self.finished.emit(
-            {
-                "translation": translated_result,
-                "ocr_blocks": recognized_texts,
-                "ocr_result": structured_result,
-            }
-        )
+            self.finished.emit(
+                {
+                    "translation": translated_result,
+                    "ocr_blocks": recognized_texts,
+                    "ocr_result": structured_result,
+                }
+            )
+        finally:
+            # 线程退出指令在工作线程自身发出，避免依赖主线程事件循环转发 quit 信号。
+            if current_thread is not None:
+                current_thread.quit()
 
 
 class OcrPrewarmWorker(QObject):
@@ -194,27 +200,10 @@ class MainWindow(QMainWindow):
         )
         layout.addLayout(recognize_button_row)
 
-        # 组合2：语言选择框与识别模式选择框固定大小，并左右组合排列。
+        # 组合3：语言选择框与识别模式选择框固定大小，并水平组合排列。
         combo_group_layout = QHBoxLayout()
         combo_group_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         combo_group_layout.setSpacing(12)
-
-        self.language_combo_box = QComboBox(self)
-        self.language_combo_box.addItem("英语", "en")
-        self.language_combo_box.addItem("日语", "japan")
-        self.language_combo_box.setCurrentIndex(0)
-        self.language_combo_box.currentIndexChanged.connect(
-            self._on_language_combo_box_changed
-        )
-        self.language_combo_box.setFixedSize(120, 32)
-
-        self.clear_memory_button = QPushButton("清空记忆", self)
-        self.clear_memory_button.clicked.connect(self._on_clear_memory_button_clicked)
-        self.clear_memory_button.setFixedSize(120, 32)
-
-        self.clear_summary_button = QPushButton("清除摘要", self)
-        self.clear_summary_button.clicked.connect(self._on_clear_summary_button_clicked)
-        self.clear_summary_button.setFixedSize(120, 32)
 
         self.recognition_mode_combo_box = QComboBox(self)
         self.recognition_mode_combo_box.addItem("单次识别", False)
@@ -225,24 +214,42 @@ class MainWindow(QMainWindow):
         )
         self.recognition_mode_combo_box.setFixedSize(120, 32)
 
-        language_column_layout = QVBoxLayout()
-        language_column_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        language_column_layout.setSpacing(8)
-        language_column_layout.addWidget(
+        self.clear_summary_button = QPushButton("清除摘要", self)
+        self.clear_summary_button.clicked.connect(self._on_clear_summary_button_clicked)
+        self.clear_summary_button.setFixedSize(120, 32)
+
+        self.language_combo_box = QComboBox(self)
+        self.language_combo_box.addItem("英语", "en")
+        self.language_combo_box.addItem("日语", "japan")
+        self.language_combo_box.setCurrentIndex(0)
+        self.language_combo_box.currentIndexChanged.connect(
+            self._on_language_combo_box_changed
+        )
+        self.language_combo_box.setFixedSize(120, 32)
+
+        combo_group_layout.addWidget(
             self.language_combo_box, alignment=Qt.AlignmentFlag.AlignCenter
         )
-        language_column_layout.addWidget(
-            self.clear_memory_button, alignment=Qt.AlignmentFlag.AlignCenter
-        )
-        language_column_layout.addWidget(
-            self.clear_summary_button, alignment=Qt.AlignmentFlag.AlignCenter
-        )
-
-        combo_group_layout.addLayout(language_column_layout)
         combo_group_layout.addWidget(
             self.recognition_mode_combo_box, alignment=Qt.AlignmentFlag.AlignCenter
         )
         layout.addLayout(combo_group_layout)
+
+        # 组合4：清空记忆按钮与清除摘要按钮固定大小，并水平组合排列。
+        clear_button_row = QHBoxLayout()
+        clear_button_row.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        clear_button_row.setSpacing(8)
+
+        self.clear_memory_button = QPushButton("清空记忆", self)
+        self.clear_memory_button.clicked.connect(self._on_clear_memory_button_clicked)
+        self.clear_memory_button.setFixedSize(120, 32)
+        clear_button_row.addWidget(
+            self.clear_memory_button, alignment=Qt.AlignmentFlag.AlignCenter
+        )
+        clear_button_row.addWidget(
+            self.clear_summary_button, alignment=Qt.AlignmentFlag.AlignCenter
+        )
+        layout.addLayout(clear_button_row)
 
         # UI 状态机：idle 表示可接收用户操作，selecting/recognizing 表示当前正处于前台交互或后台识别流程。
         self._ui_state = "idle"
@@ -306,9 +313,11 @@ class MainWindow(QMainWindow):
 
         print("框选屏幕区域按钮被点击了")
         self._set_ui_state("selecting")
-        # 主窗口本身不需要参与区域选择，因此先隐藏，避免干扰用户在全屏覆盖层上的拖拽。
-        self.hide()
-        # 使用 singleShot 延迟到下一事件循环，让窗口先完成隐藏并让覆盖层在新事件中创建，保证显示顺序稳定。
+        # 不直接 hide 主窗口，避免 Windows 在重新 show 时出现短暂白底闪烁；
+        # 改为临时透明化，保持窗口原生句柄连续存在，减少重绘抖动。
+        self.setWindowOpacity(0.0)
+        self.setEnabled(False)
+        # 使用 singleShot 延迟到下一事件循环，让主窗口透明化状态先生效，并在新事件中创建覆盖层，保证显示顺序稳定。
         QTimer.singleShot(0, self._start_screen_region_selection)
 
     def _start_screen_region_selection(self) -> None:
@@ -555,8 +564,6 @@ class MainWindow(QMainWindow):
         self._ocr_thread.started.connect(self._ocr_worker.run)
         self._ocr_worker.finished.connect(self._on_ocr_recognition_finished)
         self._ocr_worker.failed.connect(self._on_ocr_recognition_failed)
-        self._ocr_worker.finished.connect(self._ocr_thread.quit)
-        self._ocr_worker.failed.connect(self._ocr_thread.quit)
         self._ocr_thread.finished.connect(self._cleanup_ocr_recognition_thread)
 
         self._ocr_thread.start()
@@ -693,7 +700,9 @@ class MainWindow(QMainWindow):
 
     def _show_window_in_front(self) -> None:
         # 重新展示主窗口时，确保它位于其他顶层窗口前方，并主动获取焦点，方便继续操作。
-        self.showNormal()
+        self.setWindowOpacity(1.0)
+        self.setEnabled(True)
+        self.show()
         self.raise_()
         self.activateWindow()
 
