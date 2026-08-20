@@ -329,8 +329,7 @@ class MainWindow(QMainWindow):
         self._hide_selection_cancel_button_overlay()
 
         if self._translation_overlay is not None:
-            self._translation_overlay.close()
-            self._translation_overlay = None
+            self._translation_overlay.hide()
 
         try:
             # 创建覆盖整个虚拟屏幕的透明选择层，用户在其中拖拽鼠标即可选区。
@@ -603,17 +602,21 @@ class MainWindow(QMainWindow):
                 print("未找到已框选区域，无法显示翻译覆盖层")
                 return
 
-            if self._translation_overlay is not None:
-                self._translation_overlay.close()
-                self._translation_overlay = None
-
             screenshot_path = self._current_ocr_screenshot_path
-            self._translation_overlay = TranslationOverlay(
-                selection_rect,
-                screenshot_path,
-                translated_result,
-            )
+            if self._translation_overlay is None:
+                self._translation_overlay = TranslationOverlay(
+                    selection_rect,
+                    screenshot_path,
+                    translated_result,
+                )
+            else:
+                self._translation_overlay.update_content(
+                    selection_rect,
+                    screenshot_path,
+                    translated_result,
+                )
             self._translation_overlay.show()
+            self._translation_overlay.raise_()
             if self._selection_outline_overlay is not None:
                 self._selection_outline_overlay.raise_()
             if self._selection_cancel_button_overlay is not None:
@@ -625,8 +628,7 @@ class MainWindow(QMainWindow):
         if self._translation_overlay is None:
             return
 
-        self._translation_overlay.close()
-        self._translation_overlay = None
+        self._translation_overlay.hide()
 
     def _cleanup_ocr_recognition_thread(self) -> None:
         # 线程结束后清理 worker 和线程对象，避免 Qt 对象树中残留无效对象。

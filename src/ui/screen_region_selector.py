@@ -234,12 +234,33 @@ class TranslationOverlay(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         self.setWindowFlag(Qt.WindowType.WindowDoesNotAcceptFocus, True)
 
+        self._background_pixmap = None
+        self._background_size = None
+        self._translated_name = None
+        self._translated_dialog = ""
+        self._name_rect = QRect()
+        self._dialog_rect = QRect()
+        self.update_content(selection_rect, screenshot_path, translated_result)
+
+    def update_content(
+        self,
+        selection_rect: QRect,
+        screenshot_path: Path | None,
+        translated_result: dict[str, object],
+    ) -> None:
+        self.setGeometry(selection_rect)
+
         self._background_pixmap = self._load_blurred_background(screenshot_path)
-        self._background_size = self._background_pixmap.size() if self._background_pixmap is not None else None
+        self._background_size = (
+            self._background_pixmap.size()
+            if self._background_pixmap is not None
+            else None
+        )
         self._translated_name = self._normalize_name(translated_result.get("name"))
         self._translated_dialog = self._normalize_dialog(translated_result.get("dialog"))
         self._name_rect = self._build_name_rect()
         self._dialog_rect = self._build_dialog_rect()
+        self.update()
 
     def _normalize_name(self, value: object) -> str | None:
         if isinstance(value, str):
