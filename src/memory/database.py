@@ -482,6 +482,12 @@ class GameDatabase:
             self._connection.commit()
             return cursor.rowcount > 0
 
+    def clear_dialogues(self) -> int:
+        with self._lock:
+            cursor = self._connection.execute("DELETE FROM dialogues;")
+            self._connection.commit()
+            return int(cursor.rowcount)
+
     def _validate_character_reference(
         self,
         game_id: int,

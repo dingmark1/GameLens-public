@@ -56,14 +56,17 @@ class DialogueManagerWindow(QWidget):
         bottom_row.addStretch(1)
 
         self._refresh_button = QPushButton("刷新", self)
+        self._clear_button = QPushButton("全部清空", self)
         self._edit_button = QPushButton("修改", self)
         self._delete_button = QPushButton("删除", self)
 
         self._refresh_button.clicked.connect(self.refresh_dialogues)
+        self._clear_button.clicked.connect(self._on_clear_clicked)
         self._edit_button.clicked.connect(self._on_edit_clicked)
         self._delete_button.clicked.connect(self._on_delete_clicked)
 
         bottom_row.addWidget(self._refresh_button)
+        bottom_row.addWidget(self._clear_button)
         bottom_row.addWidget(self._edit_button)
         bottom_row.addWidget(self._delete_button)
         layout.addLayout(bottom_row)
@@ -159,6 +162,29 @@ class DialogueManagerWindow(QWidget):
             return
 
         QMessageBox.warning(self, "提示", "删除失败，未找到对应记录")
+
+    def _on_clear_clicked(self) -> None:
+        dialogue_count = self._table.rowCount()
+        if dialogue_count <= 0:
+            QMessageBox.information(self, "提示", "当前没有可清空的对话记录")
+            return
+
+        confirm = QMessageBox.question(
+            self,
+            "确认清空",
+            f"确定清空全部对话记录吗？\n共 {dialogue_count} 条",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+
+        deleted_count = self._database.clear_dialogues()
+        if deleted_count >= 0:
+            self.refresh_dialogues()
+            return
+
+        QMessageBox.warning(self, "提示", "清空失败")
 
     def closeEvent(self, event: QCloseEvent) -> None:
         for dialog in list(self._edit_dialogs):
