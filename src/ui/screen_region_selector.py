@@ -409,18 +409,18 @@ def capture_selection_with_mss(
                     continue
 
                 monitor_rect = _logical_rect_to_monitor_rect(logical_intersection, mapping)
-                monitor_left = monitor_rect["left"]
-                monitor_top = monitor_rect["top"]
-                monitor_width = monitor_rect["width"]
-                monitor_height = monitor_rect["height"]
-                monitor_right = monitor_left + monitor_width - 1
-                monitor_bottom = monitor_top + monitor_height - 1
-                print(
-                    "[截图坐标] mss物理坐标片段："
-                    f"左上角=({monitor_left}, {monitor_top})，"
-                    f"右下角=({monitor_right}, {monitor_bottom})，"
-                    f"宽={monitor_width}，高={monitor_height}"
-                )
+                # monitor_left = monitor_rect["left"]
+                # monitor_top = monitor_rect["top"]
+                # monitor_width = monitor_rect["width"]
+                # monitor_height = monitor_rect["height"]
+                # monitor_right = monitor_left + monitor_width - 1
+                # monitor_bottom = monitor_top + monitor_height - 1
+                # print(
+                #     "[截图坐标] mss物理坐标片段："
+                #     f"左上角=({monitor_left}, {monitor_top})，"
+                #     f"右下角=({monitor_right}, {monitor_bottom})，"
+                #     f"宽={monitor_width}，高={monitor_height}"
+                # )
                 screenshot = screenshotter.grab(monitor_rect)
                 fragment_image = Image.frombytes("RGB", screenshot.size, screenshot.rgb)
                 fragments.append((fragment_image, _monitor_dict_to_qrect(monitor_rect)))
@@ -432,18 +432,18 @@ def capture_selection_with_mss(
             for _, fragment_rect in fragments[1:]:
                 union_rect = union_rect.united(fragment_rect)
 
-            union_left = union_rect.left()
-            union_top = union_rect.top()
-            union_right = union_rect.right()
-            union_bottom = union_rect.bottom()
-            union_width = union_rect.width()
-            union_height = union_rect.height()
-            print(
-                "[截图坐标] mss最终拼接坐标："
-                f"左上角=({union_left}, {union_top})，"
-                f"右下角=({union_right}, {union_bottom})，"
-                f"宽={union_width}，高={union_height}"
-            )
+            # union_left = union_rect.left()
+            # union_top = union_rect.top()
+            # union_right = union_rect.right()
+            # union_bottom = union_rect.bottom()
+            # union_width = union_rect.width()
+            # union_height = union_rect.height()
+            # print(
+            #     "[截图坐标] mss最终拼接坐标："
+            #     f"左上角=({union_left}, {union_top})，"
+            #     f"右下角=({union_right}, {union_bottom})，"
+            #     f"宽={union_width}，高={union_height}"
+            # )
 
             stitched_image = Image.new("RGB", (union_rect.width(), union_rect.height()))
             for fragment_image, fragment_rect in fragments:

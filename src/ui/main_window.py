@@ -213,11 +213,11 @@ class MainWindow(QMainWindow):
         self.recognition_mode_combo_box.currentIndexChanged.connect(
             self._on_recognition_mode_combo_box_changed
         )
-        self.recognition_mode_combo_box.setFixedSize(120, 32)
+        self.recognition_mode_combo_box.setFixedSize(115, 32)
 
         self.clear_summary_button = QPushButton("清除摘要", self)
         self.clear_summary_button.clicked.connect(self._on_clear_summary_button_clicked)
-        self.clear_summary_button.setFixedSize(120, 32)
+        self.clear_summary_button.setFixedSize(115, 32)
 
         self.language_combo_box = QComboBox(self)
         self.language_combo_box.addItem("英语", "en")
@@ -226,7 +226,7 @@ class MainWindow(QMainWindow):
         self.language_combo_box.currentIndexChanged.connect(
             self._on_language_combo_box_changed
         )
-        self.language_combo_box.setFixedSize(120, 32)
+        self.language_combo_box.setFixedSize(115, 32)
 
         combo_group_layout.addWidget(
             self.language_combo_box, alignment=Qt.AlignmentFlag.AlignCenter
@@ -243,7 +243,7 @@ class MainWindow(QMainWindow):
 
         self.clear_memory_button = QPushButton("清空记忆", self)
         self.clear_memory_button.clicked.connect(self._on_clear_memory_button_clicked)
-        self.clear_memory_button.setFixedSize(120, 32)
+        self.clear_memory_button.setFixedSize(115, 32)
         clear_button_row.addWidget(
             self.clear_memory_button, alignment=Qt.AlignmentFlag.AlignCenter
         )
