@@ -93,7 +93,7 @@ def _build_system_prompt(target_lang: str) -> str:
     return _SYSTEM_PROMPT_TEMPLATE.replace("__TARGET_LANG__", target_lang)
 
 
-def _build_user_prompt(result: dict[str, Any]) -> str:
+def _build_user_prompt(result: dict[str, Any], request_id: str) -> str:
     raw_name = result.get("name")
     raw_dialog = result.get("dialog")
     raw_addition = result.get("addition")
@@ -107,6 +107,7 @@ def _build_user_prompt(result: dict[str, Any]) -> str:
     addition["summary"] = summary if isinstance(summary, str) else ""
 
     payload = {
+        "request_id": request_id,
         "name": name,
         "dialog": dialog,
         "addition": addition,
@@ -237,6 +238,7 @@ def _parse_json_content(content: str) -> dict[str, Any]:
 def _normalize_translation(
     parsed: dict[str, Any],
     source: dict[str, Any],
+    request_id: str,
 ) -> dict[str, Any]:
     """将模型返回的 dict 规范化为与 OcrDialogResult 一致的结构。
 
@@ -286,7 +288,14 @@ def _normalize_translation(
     if not isinstance(addition, dict):
         addition = source_addition
 
+    parsed_request_id = parsed.get("request_id")
+    if isinstance(parsed_request_id, str) and parsed_request_id.strip():
+        normalized_request_id = parsed_request_id.strip()
+    else:
+        normalized_request_id = request_id
+
     return {
+        "request_id": normalized_request_id,
         "name": name,
         "dialog": dialog,
         "addition": addition,
@@ -299,11 +308,14 @@ def _normalize_translation(
 
 def translate_dialog_result(
     result: OcrDialogResult,
+    request_id: str,
     target_lang: str = DEFAULT_TARGET_LANG,
-) -> OcrDialogResult:
+) -> dict[str, Any]:
     """将 OCR 结构化结果交给 DeepSeek 翻译，返回同构字典。"""
     if not isinstance(result, dict):
         raise TypeError("translate_dialog_result 需要一个 dict（OcrDialogResult）")
+    if not isinstance(request_id, str) or not request_id.strip():
+        raise TypeError("request_id 必须为非空字符串")
 
     if not has_translatable_content(result):
         raw_addition = result.get("addition", {})
@@ -312,13 +324,14 @@ def translate_dialog_result(
 
         print("OCR 结果为空，跳过翻译")
         return {
+            "request_id": request_id,
             "name": None,
             "dialog": [],
             "addition": dict(raw_addition),
         }
 
     system_prompt = _build_system_prompt(target_lang)
-    user_prompt = _build_user_prompt(result)
+    user_prompt = _build_user_prompt(result, request_id)
 
     print("========== 发送给 DeepSeek 的数据 ==========")
     print(user_prompt)
@@ -331,7 +344,7 @@ def translate_dialog_result(
     print()
 
     parsed = _parse_json_content(content)
-    translated = _normalize_translation(parsed, result)
+    translated = _normalize_translation(parsed, result, request_id)
     return translated
 
 
@@ -360,7 +373,7 @@ def main() -> None:
     print()
 
     try:
-        translated_result = translate_dialog_result(sample_result)
+        translated_result = translate_dialog_result(sample_result, request_id="demo-request-id")
     except TranslationError as exc:
         print(f"\n[翻译失败] {exc}")
         return

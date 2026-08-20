@@ -403,18 +403,18 @@ def capture_selection_with_mss(
         translation_overlay.hide()
 
     normalized_rect = selection_rect.normalized()
-    logical_left = normalized_rect.left()
-    logical_top = normalized_rect.top()
-    logical_right = normalized_rect.right()
-    logical_bottom = normalized_rect.bottom()
-    logical_width = normalized_rect.width()
-    logical_height = normalized_rect.height()
-    print(
-        "[截图坐标] Qt逻辑坐标："
-        f"左上角=({logical_left}, {logical_top})，"
-        f"右下角=({logical_right}, {logical_bottom})，"
-        f"宽={logical_width}，高={logical_height}"
-    )
+    # logical_left = normalized_rect.left()
+    # logical_top = normalized_rect.top()
+    # logical_right = normalized_rect.right()
+    # logical_bottom = normalized_rect.bottom()
+    # logical_width = normalized_rect.width()
+    # logical_height = normalized_rect.height()
+    # print(
+    #     "[截图坐标] Qt逻辑坐标："
+    #     f"左上角=({logical_left}, {logical_top})，"
+    #     f"右下角=({logical_right}, {logical_bottom})，"
+    #     f"宽={logical_width}，高={logical_height}"
+    # )
     with NamedTemporaryFile(suffix=".png", delete=False) as temporary_file:
         output_path = Path(temporary_file.name)
 

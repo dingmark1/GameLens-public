@@ -2,11 +2,22 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+import uuid
 
 from PyQt6 import uic
 from PyQt6.QtCore import QObject, QThread, QTimer, QRect, Qt, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QCloseEvent
-from PyQt6.QtWidgets import QDialog, QInputDialog, QMainWindow, QMessageBox, QStyle
+from PyQt6.QtWidgets import (
+    QDialog,
+    QDialogButtonBox,
+    QFormLayout,
+    QInputDialog,
+    QLineEdit,
+    QMainWindow,
+    QMessageBox,
+    QStyle,
+    QVBoxLayout,
+)
 
 from core.ocr_engine import (
     format_dialog_result,
@@ -27,6 +38,7 @@ from memory.conversation_memory import (
 )
 from memory.database import GameDatabase
 from core.app_config import AUTO_RECOGNITION_INTERVAL_MS
+from ui.character_manager_window import CharacterManagerWindow
 
 from ui.screen_region_selector import (
     SelectionOutlineOverlay,
@@ -40,6 +52,83 @@ from ui.screen_region_selector import (
 )
 
 
+class AddCharacterDialog(QDialog):
+    """确认并写入人物信息的对话框。"""
+
+    def __init__(
+        self,
+        database: GameDatabase,
+        name_original: str,
+        name_translated: str,
+        game_id: int,
+        skipped_characters: set[str],
+        parent: QMainWindow,
+    ) -> None:
+        super().__init__(parent)
+        self._database = database
+        self._game_id = game_id
+        self._skipped_characters = skipped_characters
+
+        self.setWindowTitle("新增人物")
+        self.setModal(True)
+
+        layout = QVBoxLayout(self)
+        form_layout = QFormLayout()
+
+        self._name_original_input = QLineEdit(name_original, self)
+        self._name_translated_input = QLineEdit(name_translated, self)
+        self._gender_input = QLineEdit(self)
+        self._extra_info_input = QLineEdit(self)
+
+        form_layout.addRow("原文名称", self._name_original_input)
+        form_layout.addRow("译文名称", self._name_translated_input)
+        form_layout.addRow("性别", self._gender_input)
+        form_layout.addRow("补充信息", self._extra_info_input)
+        layout.addLayout(form_layout)
+
+        self._button_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+            parent=self,
+        )
+        self._button_box.button(QDialogButtonBox.StandardButton.Ok).setText("确定")
+        self._button_box.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        self._button_box.accepted.connect(self._on_accept)
+        self._button_box.rejected.connect(self._on_reject)
+        layout.addWidget(self._button_box)
+
+    def _on_accept(self) -> None:
+        name_original = self._name_original_input.text().strip()
+        name_translated = self._name_translated_input.text().strip()
+        gender = self._gender_input.text().strip()
+        extra_info = self._extra_info_input.text().strip()
+
+        if not name_original:
+            QMessageBox.warning(self, "提示", "原文名称不能为空")
+            return
+        if not name_translated:
+            QMessageBox.warning(self, "提示", "译文名称不能为空")
+            return
+
+        try:
+            self._database.add_character(
+                name_original=name_original,
+                name_translated=name_translated,
+                game_id=self._game_id,
+                gender=gender or None,
+                extra_info=extra_info or None,
+            )
+        except ValueError as exc:
+            QMessageBox.warning(self, "提示", str(exc))
+            return
+
+        self.accept()
+
+    def _on_reject(self) -> None:
+        name_original = self._name_original_input.text().strip()
+        self._skipped_characters.add(f"{name_original}_{self._game_id}")
+        self.reject()
+
+
 class OcrRecognitionWorker(QObject):
     """在后台线程中执行 OCR 识别的工作对象。
 
@@ -49,13 +138,20 @@ class OcrRecognitionWorker(QObject):
 
     # 识别成功后直接回传结构化字典，主窗口无需再做二次拆分。
     finished = pyqtSignal(dict)
-    failed = pyqtSignal(str)
+    failed = pyqtSignal(str, str)
+    translation_context_ready = pyqtSignal(str, str)
 
-    def __init__(self, image_path: Path, skip_duplicate_check: bool) -> None:
+    def __init__(
+        self,
+        image_path: Path,
+        skip_duplicate_check: bool,
+        request_id: str,
+    ) -> None:
         # image_path 指向被识别的屏幕截图文件； OCR 引擎需要在此图像基础上抽取文字。
         super().__init__()
         self._image_path = image_path
         self._skip_duplicate_check = skip_duplicate_check
+        self._request_id = request_id
 
     @pyqtSlot()
     def run(self) -> None:
@@ -71,6 +167,7 @@ class OcrRecognitionWorker(QObject):
                     self.finished.emit(
                         {
                             "skipped": True,
+                            "request_id": self._request_id,
                             "ocr_blocks": recognized_texts,
                         }
                     )
@@ -80,26 +177,39 @@ class OcrRecognitionWorker(QObject):
                     self.finished.emit(
                         {
                             "skipped": True,
+                            "request_id": self._request_id,
                             "ocr_blocks": recognized_texts,
                         }
                     )
                     return
             except (RuntimeError, ValueError, TypeError, OSError) as exc:
                 # 把错误信息以信号形式发回主窗口，方便弹出提示框并恢复 UI 状态。
-                self.failed.emit(f"OCR 识别失败: {exc}")
+                self.failed.emit(self._request_id, f"OCR 识别失败: {exc}")
                 return
 
             try:
-                translated_result = translate_dialog_result(structured_result)
+                raw_name = structured_result.get("name")
+                if isinstance(raw_name, str):
+                    normalized_name = raw_name.strip()
+                    if normalized_name:
+                        self.translation_context_ready.emit(
+                            self._request_id,
+                            normalized_name,
+                        )
+                translated_result = translate_dialog_result(
+                    structured_result,
+                    request_id=self._request_id,
+                )
             except TranslationError as exc:
-                self.failed.emit(f"翻译失败: {exc}")
+                self.failed.emit(self._request_id, f"翻译失败: {exc}")
                 return
             except (RuntimeError, ValueError, TypeError, OSError) as exc:
-                self.failed.emit(f"翻译失败: {exc}")
+                self.failed.emit(self._request_id, f"翻译失败: {exc}")
                 return
 
             self.finished.emit(
                 {
+                    "request_id": self._request_id,
                     "translation": translated_result,
                     "ocr_blocks": recognized_texts,
                     "ocr_result": structured_result,
@@ -157,6 +267,14 @@ class MainWindow(QMainWindow):
         self._initialize_game_combo_box_data()
         self._initialize_combo_box_data()
         self._connect_ui_signals()
+        self._character_manager_window: CharacterManagerWindow | None = None
+        self._active_add_character_dialog: AddCharacterDialog | None = None
+        self._pending_add_character_prompts: list[dict[str, object]] = []
+        self._is_shutting_down = False
+        self.current_game_id: int | None = None
+        self.pending_translations: dict[str, dict[str, int | str]] = {}
+        self.skipped_characters: set[str] = set()
+        self._on_game_combo_box_changed(self.game_combo_box.currentIndex())
 
         # UI 状态机：idle 表示可接收用户操作，selecting/recognizing 表示当前正处于前台交互或后台识别流程。
         self._ui_state = "idle"
@@ -249,10 +367,26 @@ class MainWindow(QMainWindow):
         self.language_combo_box.currentIndexChanged.connect(
             self._on_language_combo_box_changed
         )
+        self.game_combo_box.currentIndexChanged.connect(
+            self._on_game_combo_box_changed
+        )
         self.game_add_button.clicked.connect(self._on_game_add_button_clicked)
         self.game_delete_button.clicked.connect(self._on_game_delete_button_clicked)
         self.clear_memory_button.clicked.connect(self._on_clear_memory_button_clicked)
         self.clear_summary_button.clicked.connect(self._on_clear_summary_button_clicked)
+        self.character_manager_button.clicked.connect(
+            self._on_character_manager_button_clicked
+        )
+
+    def _on_game_combo_box_changed(self, _index: int) -> None:
+        game_id = self.game_combo_box.currentData()
+        if isinstance(game_id, int) and game_id > 0:
+            self.current_game_id = game_id
+            print(f"当前游戏已切换为 ID={game_id}")
+        else:
+            self.current_game_id = None
+            print("当前处于临时模式（未选择游戏）")
+        self.pending_translations.clear()
 
     def _on_game_add_button_clicked(self) -> None:
         dialog = QInputDialog(self)
@@ -478,6 +612,21 @@ class MainWindow(QMainWindow):
     def _on_clear_summary_button_clicked(self) -> None:
         self.clear_summary_requested.emit()
 
+    def _on_character_manager_button_clicked(self) -> None:
+        if self._character_manager_window is None:
+            self._character_manager_window = CharacterManagerWindow(self._game_database)
+            self._character_manager_window.destroyed.connect(
+                self._on_character_manager_window_destroyed
+            )
+
+        self._character_manager_window.refresh_characters()
+        self._character_manager_window.show()
+        self._character_manager_window.raise_()
+        self._character_manager_window.activateWindow()
+
+    def _on_character_manager_window_destroyed(self, *_args: object) -> None:
+        self._character_manager_window = None
+
     def _clear_memory_history(self) -> None:
         clear_conversation_memory()
         self._pending_ocr_dialog_result = None
@@ -576,12 +725,25 @@ class MainWindow(QMainWindow):
                 raise RuntimeError(f"追加上一轮原文到记忆失败: {exc}") from exc
             self._pending_ocr_dialog_result = None
 
+        request_id = uuid.uuid4().hex
+        if self.current_game_id is not None:
+            self.pending_translations[request_id] = {
+                "name_original": "",
+                "game_id": self.current_game_id,
+            }
         self._ocr_thread = QThread(self)
-        self._ocr_worker = OcrRecognitionWorker(screenshot_path, self._is_auto_recognizing)
+        self._ocr_worker = OcrRecognitionWorker(
+            screenshot_path,
+            self._is_auto_recognizing,
+            request_id,
+        )
         self._ocr_worker.moveToThread(self._ocr_thread)
 
         # 当线程启动后，执行 OCR 工作对象的 run()；识别结束后触发回调并关闭线程。
         self._ocr_thread.started.connect(self._ocr_worker.run)
+        self._ocr_worker.translation_context_ready.connect(
+            self._on_translation_context_ready
+        )
         self._ocr_worker.finished.connect(self._on_ocr_recognition_finished)
         self._ocr_worker.failed.connect(self._on_ocr_recognition_failed)
         self._ocr_thread.finished.connect(self._cleanup_ocr_recognition_thread)
@@ -591,16 +753,108 @@ class MainWindow(QMainWindow):
 
     def _on_ocr_recognition_finished(self, result_payload: dict) -> None:
         self._is_recognition_running = False
+        request_id = result_payload.get("request_id")
         if result_payload.get("skipped"):
+            if isinstance(request_id, str) and request_id:
+                self.pending_translations.pop(request_id, None)
             self._cleanup_current_ocr_screenshot_path()
             return
         ocr_result = result_payload.get("ocr_result")
         if isinstance(ocr_result, dict):
             self._pending_ocr_dialog_result = ocr_result
+        self._try_prompt_add_character(result_payload)
         self._show_translation_overlay(result_payload)
 
-    def _on_ocr_recognition_failed(self, error_message: str) -> None:
+    @pyqtSlot(str, str)
+    def _on_translation_context_ready(self, request_id: str, name_original: str) -> None:
+        pending_entry = self.pending_translations.get(request_id)
+        if not isinstance(pending_entry, dict):
+            return
+
+        normalized_name = name_original.strip()
+        if not normalized_name:
+            return
+
+        pending_entry["name_original"] = normalized_name
+
+    def _character_skip_key(self, name_original: str, game_id: int) -> str:
+        return f"{name_original}_{game_id}"
+
+    def _try_prompt_add_character(self, result_payload: dict) -> None:
+        request_id = result_payload.get("request_id")
+        if not isinstance(request_id, str) or not request_id:
+            return
+
+        translation = result_payload.get("translation")
+        if not isinstance(translation, dict):
+            self.pending_translations.pop(request_id, None)
+            return
+
+        pending_entry = self.pending_translations.pop(request_id, None)
+        if not isinstance(pending_entry, dict):
+            return
+
+        name_original = pending_entry.get("name_original")
+        game_id = pending_entry.get("game_id")
+        translated_name = translation.get("name")
+        if not isinstance(name_original, str) or not name_original.strip():
+            return
+        if not isinstance(game_id, int) or game_id <= 0:
+            return
+        if not isinstance(translated_name, str) or not translated_name.strip():
+            return
+
+        if self._game_database.character_exists(name_original, game_id):
+            return
+
+        prompt_key = self._character_skip_key(name_original, game_id)
+        if prompt_key in self.skipped_characters:
+            return
+
+        prompt_data = {
+            "name_original": name_original,
+            "name_translated": translated_name.strip(),
+            "game_id": game_id,
+        }
+
+        if self._active_add_character_dialog is not None:
+            self._pending_add_character_prompts.append(prompt_data)
+            return
+
+        self._show_add_character_prompt(prompt_data)
+
+    def _show_add_character_prompt(self, prompt_data: dict[str, object]) -> None:
+        name_original = str(prompt_data.get("name_original", ""))
+        name_translated = str(prompt_data.get("name_translated", ""))
+        game_id = int(prompt_data.get("game_id", 0))
+
+        dialog = AddCharacterDialog(
+            database=self._game_database,
+            name_original=name_original,
+            name_translated=name_translated,
+            game_id=game_id,
+            skipped_characters=self.skipped_characters,
+            parent=None,
+        )
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        dialog.finished.connect(self._on_add_character_dialog_finished)
+        self._active_add_character_dialog = dialog
+        dialog.open()
+
+    def _on_add_character_dialog_finished(self, _result: int) -> None:
+        self._active_add_character_dialog = None
+        if self._is_shutting_down:
+            return
+        if not self._pending_add_character_prompts:
+            return
+
+        next_prompt = self._pending_add_character_prompts.pop(0)
+        self._show_add_character_prompt(next_prompt)
+
+    def _on_ocr_recognition_failed(self, request_id: str, error_message: str) -> None:
         self._is_recognition_running = False
+        if request_id:
+            self.pending_translations.pop(request_id, None)
         print(error_message)
         self._cleanup_current_ocr_screenshot_path()
 
@@ -725,6 +979,7 @@ class MainWindow(QMainWindow):
         self.game_combo_box.setEnabled(is_idle)
         self.game_add_button.setEnabled(is_idle)
         self.game_delete_button.setEnabled(is_idle)
+        self.character_manager_button.setEnabled(is_idle)
         self.recognize_selected_region_text_button.setText("识别并翻译框选区域文字")
 
     def _show_window_in_front(self) -> None:
@@ -737,6 +992,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:
         # 关闭窗口前优雅退出后台 OCR 线程和预热线程，防止退出时出现悬挂线程或资源未释放问题。
+        self._is_shutting_down = True
         self._auto_recognition_timer.stop()
         self._hide_selection_cancel_button_overlay()
         self._hide_selection_outline_overlay()
@@ -751,6 +1007,15 @@ class MainWindow(QMainWindow):
         if self._translation_overlay is not None:
             self._translation_overlay.close()
             self._translation_overlay = None
+
+        if self._character_manager_window is not None:
+            self._character_manager_window.close()
+            self._character_manager_window = None
+
+        if self._active_add_character_dialog is not None:
+            self._active_add_character_dialog.close()
+            self._active_add_character_dialog = None
+        self._pending_add_character_prompts.clear()
 
         self._game_database.close()
         super().closeEvent(event)
