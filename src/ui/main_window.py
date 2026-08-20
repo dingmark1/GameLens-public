@@ -6,7 +6,7 @@ from typing import Any
 from PyQt6 import uic
 from PyQt6.QtCore import QObject, QThread, QTimer, QRect, Qt, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QCloseEvent
-from PyQt6.QtWidgets import QMainWindow, QMessageBox
+from PyQt6.QtWidgets import QDialog, QInputDialog, QMainWindow, QMessageBox, QStyle
 
 from core.ocr_engine import (
     format_dialog_result,
@@ -25,6 +25,7 @@ from memory.conversation_memory import (
     clear_conversation_summary,
     is_duplicate_ocr_dialog_result,
 )
+from memory.database import GameDatabase
 from core.app_config import AUTO_RECOGNITION_INTERVAL_MS
 
 from ui.screen_region_selector import (
@@ -152,6 +153,8 @@ class MainWindow(QMainWindow):
         # 将窗口放置到当前屏幕的中心位置，避免首次启动时出现在偏离视线的区域。
         self._center_on_screen()
 
+        self._game_database = GameDatabase()
+        self._initialize_game_combo_box_data()
         self._initialize_combo_box_data()
         self._connect_ui_signals()
 
@@ -201,6 +204,38 @@ class MainWindow(QMainWindow):
         self.language_combo_box.addItem("日语", "japan")
         self.language_combo_box.setCurrentIndex(0)
 
+    def _initialize_game_combo_box_data(self) -> None:
+        self.game_add_button.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogNewFolder)
+        )
+        self.game_delete_button.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_TrashIcon)
+        )
+        self._reload_game_combo_box()
+
+    def _reload_game_combo_box(self, selected_game_name: str | None = None) -> None:
+        self.game_combo_box.clear()
+        self.game_combo_box.addItem("未选择游戏", None)
+
+        for game in self._game_database.list_games():
+            game_name = game.get("game_name")
+            if isinstance(game_name, str) and game_name.strip():
+                self.game_combo_box.addItem(game_name, game.get("id"))
+
+        if selected_game_name is None:
+            self.game_combo_box.setCurrentIndex(0)
+            return
+
+        index = self.game_combo_box.findText(
+            selected_game_name,
+            Qt.MatchFlag.MatchExactly,
+        )
+        if index >= 0:
+            self.game_combo_box.setCurrentIndex(index)
+            return
+
+        self.game_combo_box.setCurrentIndex(0)
+
     def _connect_ui_signals(self) -> None:
         self.select_screen_region_button.clicked.connect(
             self._on_select_screen_region_button_clicked
@@ -214,8 +249,63 @@ class MainWindow(QMainWindow):
         self.language_combo_box.currentIndexChanged.connect(
             self._on_language_combo_box_changed
         )
+        self.game_add_button.clicked.connect(self._on_game_add_button_clicked)
+        self.game_delete_button.clicked.connect(self._on_game_delete_button_clicked)
         self.clear_memory_button.clicked.connect(self._on_clear_memory_button_clicked)
         self.clear_summary_button.clicked.connect(self._on_clear_summary_button_clicked)
+
+    def _on_game_add_button_clicked(self) -> None:
+        dialog = QInputDialog(self)
+        dialog.setWindowTitle("添加游戏")
+        dialog.setLabelText("请输入游戏名称：")
+        dialog.setOkButtonText("确认")
+        dialog.setCancelButtonText("取消")
+        dialog.setTextValue("")
+
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        game_name = dialog.textValue().strip()
+        if not game_name:
+            QMessageBox.warning(self, "提示", "游戏名称不能为空")
+            return
+
+        try:
+            self._game_database.add_game(game_name)
+        except ValueError as exc:
+            QMessageBox.warning(self, "提示", str(exc))
+            self._reload_game_combo_box(selected_game_name=game_name)
+            return
+
+        self._reload_game_combo_box(selected_game_name=game_name)
+        print(f"已添加游戏：{game_name}")
+
+    def _on_game_delete_button_clicked(self) -> None:
+        current_index = self.game_combo_box.currentIndex()
+        if current_index <= 0:
+            QMessageBox.information(self, "提示", "“未选择游戏”不能被删除")
+            return
+
+        game_name = self.game_combo_box.currentText().strip()
+        confirm = QMessageBox.question(
+            self,
+            "确认删除",
+            f"确定删除游戏“{game_name}”吗？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+
+        deleted_count = self._game_database.delete_game(game_name)
+        if deleted_count <= 0:
+            QMessageBox.warning(self, "提示", f"未找到游戏：{game_name}")
+            self._reload_game_combo_box()
+            return
+
+        self._reload_game_combo_box()
+        self.game_combo_box.setCurrentIndex(0)
+        print(f"已删除游戏：{game_name}，删除数量={deleted_count}")
 
     def _center_on_screen(self) -> None:
         # 获取当前窗口附着的屏幕对象；在多显示器环境下，screen() 返回的是该窗口当前所在的那块屏幕。
@@ -622,6 +712,9 @@ class MainWindow(QMainWindow):
             self.recognize_selected_region_text_button.setEnabled(True)
             self.recognition_mode_combo_box.setEnabled(False)
             self.language_combo_box.setEnabled(False)
+            self.game_combo_box.setEnabled(False)
+            self.game_add_button.setEnabled(False)
+            self.game_delete_button.setEnabled(False)
             self.recognize_selected_region_text_button.setText("停止识别")
             return
 
@@ -629,6 +722,9 @@ class MainWindow(QMainWindow):
         self.recognize_selected_region_text_button.setEnabled(is_idle)
         self.recognition_mode_combo_box.setEnabled(is_idle)
         self.language_combo_box.setEnabled(is_idle and self._ocr_thread is None)
+        self.game_combo_box.setEnabled(is_idle)
+        self.game_add_button.setEnabled(is_idle)
+        self.game_delete_button.setEnabled(is_idle)
         self.recognize_selected_region_text_button.setText("识别并翻译框选区域文字")
 
     def _show_window_in_front(self) -> None:
@@ -656,4 +752,5 @@ class MainWindow(QMainWindow):
             self._translation_overlay.close()
             self._translation_overlay = None
 
+        self._game_database.close()
         super().closeEvent(event)
