@@ -3,17 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from PyQt6 import uic
 from PyQt6.QtCore import QObject, QThread, QTimer, QRect, Qt, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QCloseEvent
-from PyQt6.QtWidgets import (
-    QComboBox,
-    QHBoxLayout,
-    QMainWindow,
-    QMessageBox,
-    QPushButton,
-    QVBoxLayout,
-    QWidget,
-)
+from PyQt6.QtWidgets import QMainWindow, QMessageBox
 
 from core.ocr_engine import (
     format_dialog_result,
@@ -153,104 +146,14 @@ class MainWindow(QMainWindow):
         # 先调用父类构造函数，完成 QMainWindow 的底层初始化，包含 Qt 对象树、事件循环等基础设施。
         super().__init__()
 
-        # 设置窗口标题，显示在窗口顶部标题栏中，便于用户识别当前应用。
-        self.setWindowTitle("GameLens")
-
-        # 设置窗口的初始大小：宽 400 像素、高 300 像素；这是一种稳定的默认布局值，适合后续按钮和中间内容区展示。
-        self.resize(400, 300)
+        ui_path = Path(__file__).with_name("main_window.ui")
+        uic.loadUi(str(ui_path), self)
 
         # 将窗口放置到当前屏幕的中心位置，避免首次启动时出现在偏离视线的区域。
         self._center_on_screen()
 
-        # 构造主内容区域和垂直布局；所有按钮都放在这个容器中，形成简洁的控制台式界面。
-        central_widget = QWidget(self)
-        self.setCentralWidget(central_widget)
-        layout = QVBoxLayout(central_widget)
-        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        # 组合1：框选按钮固定大小，水平居中，不随窗口缩放。
-        button_group_layout = QHBoxLayout()
-        button_group_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        self.select_screen_region_button = QPushButton("框选屏幕区域", self)
-        self.select_screen_region_button.clicked.connect(
-            self._on_select_screen_region_button_clicked
-        )
-        self.select_screen_region_button.setFixedSize(240, 40)
-        button_group_layout.addWidget(
-            self.select_screen_region_button,
-            alignment=Qt.AlignmentFlag.AlignCenter,
-        )
-
-        # “识别并翻译框选区域文字”按钮会从进程内缓存中读取上一轮选择结果，并进一步进入 OCR 流程。
-        self.recognize_selected_region_text_button = QPushButton(
-            "识别并翻译框选区域文字",
-            self,
-        )
-        self.recognize_selected_region_text_button.clicked.connect(
-            self._on_recognize_selected_region_text_button_clicked
-        )
-        self.recognize_selected_region_text_button.setFixedSize(240, 40)
-        layout.addLayout(button_group_layout)
-
-        recognize_button_row = QHBoxLayout()
-        recognize_button_row.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        recognize_button_row.addWidget(
-            self.recognize_selected_region_text_button,
-            alignment=Qt.AlignmentFlag.AlignCenter,
-        )
-        layout.addLayout(recognize_button_row)
-
-        # 组合3：语言选择框与识别模式选择框固定大小，并水平组合排列。
-        combo_group_layout = QHBoxLayout()
-        combo_group_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        combo_group_layout.setSpacing(12)
-
-        self.recognition_mode_combo_box = QComboBox(self)
-        self.recognition_mode_combo_box.addItem("单次识别", False)
-        self.recognition_mode_combo_box.addItem("循环识别", True)
-        self.recognition_mode_combo_box.setCurrentIndex(0)
-        self.recognition_mode_combo_box.currentIndexChanged.connect(
-            self._on_recognition_mode_combo_box_changed
-        )
-        self.recognition_mode_combo_box.setFixedSize(115, 32)
-
-        self.clear_summary_button = QPushButton("清除摘要", self)
-        self.clear_summary_button.clicked.connect(self._on_clear_summary_button_clicked)
-        self.clear_summary_button.setFixedSize(115, 32)
-
-        self.language_combo_box = QComboBox(self)
-        self.language_combo_box.addItem("英语", "en")
-        self.language_combo_box.addItem("日语", "japan")
-        self.language_combo_box.setCurrentIndex(0)
-        self.language_combo_box.currentIndexChanged.connect(
-            self._on_language_combo_box_changed
-        )
-        self.language_combo_box.setFixedSize(115, 32)
-
-        combo_group_layout.addWidget(
-            self.language_combo_box, alignment=Qt.AlignmentFlag.AlignCenter
-        )
-        combo_group_layout.addWidget(
-            self.recognition_mode_combo_box, alignment=Qt.AlignmentFlag.AlignCenter
-        )
-        layout.addLayout(combo_group_layout)
-
-        # 组合4：清空记忆按钮与清除摘要按钮固定大小，并水平组合排列。
-        clear_button_row = QHBoxLayout()
-        clear_button_row.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        clear_button_row.setSpacing(8)
-
-        self.clear_memory_button = QPushButton("清空记忆", self)
-        self.clear_memory_button.clicked.connect(self._on_clear_memory_button_clicked)
-        self.clear_memory_button.setFixedSize(115, 32)
-        clear_button_row.addWidget(
-            self.clear_memory_button, alignment=Qt.AlignmentFlag.AlignCenter
-        )
-        clear_button_row.addWidget(
-            self.clear_summary_button, alignment=Qt.AlignmentFlag.AlignCenter
-        )
-        layout.addLayout(clear_button_row)
+        self._initialize_combo_box_data()
+        self._connect_ui_signals()
 
         # UI 状态机：idle 表示可接收用户操作，selecting/recognizing 表示当前正处于前台交互或后台识别流程。
         self._ui_state = "idle"
@@ -286,6 +189,33 @@ class MainWindow(QMainWindow):
         self._auto_recognition_enabled = bool(mode_is_loop)
         self._update_button_states()
         self._start_ocr_prewarm()
+
+    def _initialize_combo_box_data(self) -> None:
+        self.recognition_mode_combo_box.clear()
+        self.recognition_mode_combo_box.addItem("单次识别", False)
+        self.recognition_mode_combo_box.addItem("循环识别", True)
+        self.recognition_mode_combo_box.setCurrentIndex(0)
+
+        self.language_combo_box.clear()
+        self.language_combo_box.addItem("英语", "en")
+        self.language_combo_box.addItem("日语", "japan")
+        self.language_combo_box.setCurrentIndex(0)
+
+    def _connect_ui_signals(self) -> None:
+        self.select_screen_region_button.clicked.connect(
+            self._on_select_screen_region_button_clicked
+        )
+        self.recognize_selected_region_text_button.clicked.connect(
+            self._on_recognize_selected_region_text_button_clicked
+        )
+        self.recognition_mode_combo_box.currentIndexChanged.connect(
+            self._on_recognition_mode_combo_box_changed
+        )
+        self.language_combo_box.currentIndexChanged.connect(
+            self._on_language_combo_box_changed
+        )
+        self.clear_memory_button.clicked.connect(self._on_clear_memory_button_clicked)
+        self.clear_summary_button.clicked.connect(self._on_clear_summary_button_clicked)
 
     def _center_on_screen(self) -> None:
         # 获取当前窗口附着的屏幕对象；在多显示器环境下，screen() 返回的是该窗口当前所在的那块屏幕。

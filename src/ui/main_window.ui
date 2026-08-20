@@ -1,0 +1,188 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>MainWindow</class>
+ <widget class="QMainWindow" name="MainWindow">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>400</width>
+    <height>300</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>GameLens</string>
+  </property>
+  <widget class="QWidget" name="central_widget">
+   <layout class="QVBoxLayout" name="layout">
+    <property name="alignment">
+     <set>Qt::AlignCenter</set>
+    </property>
+    <item>
+     <layout class="QHBoxLayout" name="button_group_layout">
+      <property name="alignment">
+       <set>Qt::AlignCenter</set>
+      </property>
+      <item alignment="Qt::AlignCenter">
+       <widget class="QPushButton" name="select_screen_region_button">
+        <property name="minimumSize">
+         <size>
+          <width>240</width>
+          <height>40</height>
+         </size>
+        </property>
+        <property name="maximumSize">
+         <size>
+          <width>240</width>
+          <height>40</height>
+         </size>
+        </property>
+        <property name="text">
+         <string>框选屏幕区域</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </item>
+    <item>
+     <layout class="QHBoxLayout" name="recognize_button_row">
+      <property name="alignment">
+       <set>Qt::AlignCenter</set>
+      </property>
+      <item alignment="Qt::AlignCenter">
+       <widget class="QPushButton" name="recognize_selected_region_text_button">
+        <property name="minimumSize">
+         <size>
+          <width>240</width>
+          <height>40</height>
+         </size>
+        </property>
+        <property name="maximumSize">
+         <size>
+          <width>240</width>
+          <height>40</height>
+         </size>
+        </property>
+        <property name="text">
+         <string>识别并翻译框选区域文字</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </item>
+    <item>
+     <layout class="QHBoxLayout" name="combo_group_layout">
+      <property name="spacing">
+       <number>12</number>
+      </property>
+      <property name="alignment">
+       <set>Qt::AlignCenter</set>
+      </property>
+      <item alignment="Qt::AlignCenter">
+       <widget class="QComboBox" name="language_combo_box">
+        <property name="minimumSize">
+         <size>
+          <width>115</width>
+          <height>32</height>
+         </size>
+        </property>
+        <property name="maximumSize">
+         <size>
+          <width>115</width>
+          <height>32</height>
+         </size>
+        </property>
+        <item>
+         <property name="text">
+          <string>英语</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>日语</string>
+         </property>
+        </item>
+       </widget>
+      </item>
+      <item alignment="Qt::AlignCenter">
+       <widget class="QComboBox" name="recognition_mode_combo_box">
+        <property name="minimumSize">
+         <size>
+          <width>115</width>
+          <height>32</height>
+         </size>
+        </property>
+        <property name="maximumSize">
+         <size>
+          <width>115</width>
+          <height>32</height>
+         </size>
+        </property>
+        <item>
+         <property name="text">
+          <string>单次识别</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>循环识别</string>
+         </property>
+        </item>
+       </widget>
+      </item>
+     </layout>
+    </item>
+    <item>
+     <layout class="QHBoxLayout" name="clear_button_row">
+      <property name="spacing">
+       <number>8</number>
+      </property>
+      <property name="alignment">
+       <set>Qt::AlignCenter</set>
+      </property>
+      <item alignment="Qt::AlignCenter">
+       <widget class="QPushButton" name="clear_memory_button">
+        <property name="minimumSize">
+         <size>
+          <width>115</width>
+          <height>32</height>
+         </size>
+        </property>
+        <property name="maximumSize">
+         <size>
+          <width>115</width>
+          <height>32</height>
+         </size>
+        </property>
+        <property name="text">
+         <string>清空记忆</string>
+        </property>
+       </widget>
+      </item>
+      <item alignment="Qt::AlignCenter">
+       <widget class="QPushButton" name="clear_summary_button">
+        <property name="minimumSize">
+         <size>
+          <width>115</width>
+          <height>32</height>
+         </size>
+        </property>
+        <property name="maximumSize">
+         <size>
+          <width>115</width>
+          <height>32</height>
+         </size>
+        </property>
+        <property name="text">
+         <string>清除摘要</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </item>
+   </layout>
+  </widget>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>
