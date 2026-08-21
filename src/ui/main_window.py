@@ -35,11 +35,13 @@ from memory.conversation_memory import (
     clear_conversation_memory,
     clear_conversation_summary,
     is_duplicate_ocr_dialog_result,
+    set_conversation_summary,
 )
 from memory.database import GameDatabase
 from core.app_config import AUTO_RECOGNITION_INTERVAL_MS
 from ui.character_manager_window import CharacterManagerWindow
 from ui.dialogue_manager_window import DialogueManagerWindow
+from ui.summary_manager_window import SummaryManagerWindow
 
 from ui.screen_region_selector import (
     SelectionOutlineOverlay,
@@ -272,6 +274,7 @@ class MainWindow(QMainWindow):
         self._connect_ui_signals()
         self._character_manager_window: CharacterManagerWindow | None = None
         self._dialogue_manager_window: DialogueManagerWindow | None = None
+        self._summary_manager_window: SummaryManagerWindow | None = None
         self._active_add_character_dialog: AddCharacterDialog | None = None
         self._pending_add_character_prompts: list[dict[str, object]] = []
         self._active_add_character_prompt_data: dict[str, object] | None = None
@@ -384,15 +387,24 @@ class MainWindow(QMainWindow):
         self.dialogue_manager_button.clicked.connect(
             self._on_dialogue_manager_button_clicked
         )
+        self.summary_manager_button.clicked.connect(self._on_summary_manager_button_clicked)
 
     def _on_game_combo_box_changed(self, _index: int) -> None:
         game_id = self.game_combo_box.currentData()
+        clear_conversation_memory()
+        if hasattr(self, "_pending_ocr_dialog_result"):
+            self._pending_ocr_dialog_result = None
+
         if isinstance(game_id, int) and game_id > 0:
             self.current_game_id = game_id
             print(f"当前游戏已切换为 ID={game_id}")
+            latest_summary = self._game_database.get_latest_summary(game_id)
+            set_conversation_summary(latest_summary, game_id=game_id)
         else:
             self.current_game_id = None
             print("当前处于临时模式（未选择游戏）")
+            set_conversation_summary("", game_id=None)
+
         self.pending_translations.clear()
 
     def _on_game_add_button_clicked(self) -> None:
@@ -649,6 +661,21 @@ class MainWindow(QMainWindow):
     def _on_dialogue_manager_window_destroyed(self, *_args: object) -> None:
         self._dialogue_manager_window = None
 
+    def _on_summary_manager_button_clicked(self) -> None:
+        if self._summary_manager_window is None:
+            self._summary_manager_window = SummaryManagerWindow(self._game_database)
+            self._summary_manager_window.destroyed.connect(
+                self._on_summary_manager_window_destroyed
+            )
+
+        self._summary_manager_window.refresh_summaries()
+        self._summary_manager_window.show()
+        self._summary_manager_window.raise_()
+        self._summary_manager_window.activateWindow()
+
+    def _on_summary_manager_window_destroyed(self, *_args: object) -> None:
+        self._summary_manager_window = None
+
     def _clear_memory_history(self) -> None:
         clear_conversation_memory()
         self._pending_ocr_dialog_result = None
@@ -741,7 +768,11 @@ class MainWindow(QMainWindow):
         pending_ocr_dialog_result = self._pending_ocr_dialog_result
         if pending_ocr_dialog_result is not None:
             try:
-                append_ocr_dialog_result(pending_ocr_dialog_result)
+                append_ocr_dialog_result(
+                    pending_ocr_dialog_result,
+                    game_id=self.current_game_id,
+                    database=self._game_database,
+                )
             except (RuntimeError, TypeError, ValueError) as exc:
                 self._pending_ocr_dialog_result = pending_ocr_dialog_result
                 raise RuntimeError(f"追加上一轮原文到记忆失败: {exc}") from exc
@@ -1120,6 +1151,7 @@ class MainWindow(QMainWindow):
         self.game_delete_button.setEnabled(is_idle)
         self.character_manager_button.setEnabled(is_idle)
         self.dialogue_manager_button.setEnabled(is_idle)
+        self.summary_manager_button.setEnabled(is_idle)
         self.recognize_selected_region_text_button.setText("识别并翻译框选区域文字")
 
     def _show_window_in_front(self) -> None:
@@ -1155,6 +1187,10 @@ class MainWindow(QMainWindow):
         if self._dialogue_manager_window is not None:
             self._dialogue_manager_window.close()
             self._dialogue_manager_window = None
+
+        if self._summary_manager_window is not None:
+            self._summary_manager_window.close()
+            self._summary_manager_window = None
 
         if self._active_add_character_dialog is not None:
             self._active_add_character_dialog.close()

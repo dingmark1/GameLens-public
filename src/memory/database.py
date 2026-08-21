@@ -63,6 +63,31 @@ class GameDatabase:
                 );
                 """
             )
+            self._connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS summaries (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    game_id INTEGER NOT NULL,
+                    content TEXT NOT NULL,
+                    start_conversation_id INTEGER,
+                    end_conversation_id INTEGER,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE
+                );
+                """
+            )
+            self._connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_summaries_game_id
+                ON summaries(game_id);
+                """
+            )
+            self._connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_summaries_created_at
+                ON summaries(created_at);
+                """
+            )
             self._migrate_dialogues_table_if_needed()
             self._ensure_dialogues_character_delete_trigger()
             self._connection.commit()
@@ -410,6 +435,35 @@ class GameDatabase:
             for row in rows
         ]
 
+    def get_all_summaries_with_game_name(self) -> list[dict[str, object]]:
+        with self._lock:
+            cursor = self._connection.execute(
+                """
+                SELECT
+                    s.id,
+                    g.game_name,
+                    s.content,
+                    s.start_conversation_id,
+                    s.end_conversation_id,
+                    s.created_at
+                FROM summaries AS s
+                LEFT JOIN games AS g ON s.game_id = g.id
+                ORDER BY s.id DESC;
+                """
+            )
+            rows = cursor.fetchall()
+        return [
+            {
+                "id": row["id"],
+                "game_name": row["game_name"],
+                "content": row["content"],
+                "start_conversation_id": row["start_conversation_id"],
+                "end_conversation_id": row["end_conversation_id"],
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
+
     def update_dialogue(
         self,
         dialogue_id: int,
@@ -482,11 +536,175 @@ class GameDatabase:
             self._connection.commit()
             return cursor.rowcount > 0
 
+    def update_summary(self, summary_id: int, new_content: str) -> bool:
+        normalized_content = new_content.strip()
+        if summary_id <= 0:
+            raise ValueError("summary_id 必须为正整数")
+        if not normalized_content:
+            raise ValueError("摘要内容不能为空")
+
+        with self._lock:
+            cursor = self._connection.execute(
+                """
+                UPDATE summaries
+                SET content = ?
+                WHERE id = ?;
+                """,
+                (normalized_content, summary_id),
+            )
+            self._connection.commit()
+            return cursor.rowcount > 0
+
+    def delete_summary(self, summary_id: int) -> bool:
+        if summary_id <= 0:
+            raise ValueError("summary_id 必须为正整数")
+
+        with self._lock:
+            cursor = self._connection.execute(
+                "DELETE FROM summaries WHERE id = ?;",
+                (summary_id,),
+            )
+            self._connection.commit()
+            return cursor.rowcount > 0
+
     def clear_dialogues(self) -> int:
         with self._lock:
             cursor = self._connection.execute("DELETE FROM dialogues;")
             self._connection.commit()
             return int(cursor.rowcount)
+
+    def add_summary(
+        self,
+        game_id: int,
+        content: str,
+        start_id: int | None,
+        end_id: int | None,
+    ) -> int:
+        normalized_content = content.strip()
+        if game_id <= 0:
+            raise ValueError("game_id 必须为正整数")
+        if not normalized_content:
+            raise ValueError("摘要内容不能为空")
+        if start_id is not None and start_id <= 0:
+            raise ValueError("start_id 必须为正整数或 None")
+        if end_id is not None and end_id <= 0:
+            raise ValueError("end_id 必须为正整数或 None")
+
+        with self._lock:
+            cursor = self._connection.execute(
+                """
+                INSERT INTO summaries (
+                    game_id,
+                    content,
+                    start_conversation_id,
+                    end_conversation_id
+                ) VALUES (?, ?, ?, ?);
+                """,
+                (game_id, normalized_content, start_id, end_id),
+            )
+            self._connection.commit()
+            return int(cursor.lastrowid)
+
+    def get_latest_summary(self, game_id: int) -> str:
+        if game_id <= 0:
+            raise ValueError("game_id 必须为正整数")
+
+        with self._lock:
+            cursor = self._connection.execute(
+                """
+                SELECT content
+                FROM summaries
+                WHERE game_id = ?
+                ORDER BY id DESC
+                LIMIT 1;
+                """,
+                (game_id,),
+            )
+            row = cursor.fetchone()
+        if row is None:
+            return ""
+        return str(row["content"] or "")
+
+    def get_latest_summary_record(self, game_id: int) -> dict[str, object] | None:
+        if game_id <= 0:
+            raise ValueError("game_id 必须为正整数")
+
+        with self._lock:
+            cursor = self._connection.execute(
+                """
+                SELECT
+                    id,
+                    game_id,
+                    content,
+                    start_conversation_id,
+                    end_conversation_id,
+                    created_at
+                FROM summaries
+                WHERE game_id = ?
+                ORDER BY id DESC
+                LIMIT 1;
+                """,
+                (game_id,),
+            )
+            row = cursor.fetchone()
+        if row is None:
+            return None
+
+        return {
+            "id": row["id"],
+            "game_id": row["game_id"],
+            "content": row["content"],
+            "start_conversation_id": row["start_conversation_id"],
+            "end_conversation_id": row["end_conversation_id"],
+            "created_at": row["created_at"],
+        }
+
+    def get_dialogues_by_game_range(
+        self,
+        game_id: int,
+        start_id: int,
+        end_id: int,
+    ) -> list[dict[str, object]]:
+        if game_id <= 0:
+            raise ValueError("game_id 必须为正整数")
+        if start_id <= 0:
+            raise ValueError("start_id 必须为正整数")
+        if end_id <= 0:
+            raise ValueError("end_id 必须为正整数")
+        if end_id < start_id:
+            return []
+
+        with self._lock:
+            cursor = self._connection.execute(
+                """
+                SELECT
+                    id,
+                    game_id,
+                    character_name_original,
+                    dialog_text_original,
+                    dialog_text_translated,
+                    created_at
+                FROM dialogues
+                WHERE game_id = ?
+                    AND id >= ?
+                    AND id <= ?
+                ORDER BY id ASC;
+                """,
+                (game_id, start_id, end_id),
+            )
+            rows = cursor.fetchall()
+
+        return [
+            {
+                "id": row["id"],
+                "game_id": row["game_id"],
+                "character_name_original": row["character_name_original"],
+                "dialog_text_original": row["dialog_text_original"],
+                "dialog_text_translated": row["dialog_text_translated"],
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
 
     def _validate_character_reference(
         self,
