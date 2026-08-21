@@ -147,12 +147,45 @@ class OcrRecognitionWorker(QObject):
         image_path: Path,
         skip_duplicate_check: bool,
         request_id: str,
+        game_id: int | None,
+        database: GameDatabase,
     ) -> None:
         # image_path 指向被识别的屏幕截图文件； OCR 引擎需要在此图像基础上抽取文字。
         super().__init__()
         self._image_path = image_path
         self._skip_duplicate_check = skip_duplicate_check
         self._request_id = request_id
+        self._game_id = game_id
+        self._database = database
+
+    def _build_character_information(self, name_original: str | None) -> str:
+        if not isinstance(self._game_id, int) or self._game_id <= 0:
+            return ""
+        if not isinstance(name_original, str) or not name_original.strip():
+            return ""
+
+        character = self._database.get_character_by_name_original(
+            name_original=name_original,
+            game_id=self._game_id,
+        )
+        if character is None:
+            return ""
+
+        translated_name_value = character.get("name_translated")
+        translated_name = (
+            translated_name_value.strip()
+            if isinstance(translated_name_value, str)
+            else ""
+        )
+        gender_value = character.get("gender")
+        gender = gender_value.strip() if isinstance(gender_value, str) else ""
+        extra_info_value = character.get("extra_info")
+        extra_info = (
+            extra_info_value.strip()
+            if isinstance(extra_info_value, str)
+            else ""
+        )
+        return f"译名：{translated_name}，性别：{gender}，额外信息：{extra_info}"
 
     @pyqtSlot()
     def run(self) -> None:
@@ -196,6 +229,13 @@ class OcrRecognitionWorker(QObject):
                 else:
                     normalized_name = ""
                 dialog_original = raw_dialog if isinstance(raw_dialog, list) else []
+                addition = structured_result.get("addition")
+                if not isinstance(addition, dict):
+                    addition = {}
+                    structured_result["addition"] = addition
+                addition["character_information"] = self._build_character_information(
+                    normalized_name
+                )
                 self.translation_context_ready.emit(
                     self._request_id,
                     normalized_name,
@@ -790,6 +830,8 @@ class MainWindow(QMainWindow):
             screenshot_path,
             self._is_auto_recognizing,
             request_id,
+            self.current_game_id,
+            self._game_database,
         )
         self._ocr_worker.moveToThread(self._ocr_thread)
 
@@ -866,6 +908,7 @@ class MainWindow(QMainWindow):
             else ""
         )
 
+        pending_prompts: list[dict[str, object]] = []
         max_count = max(len(original_dialogs), len(translated_dialogs))
         for index in range(max_count):
             original_text = ""
@@ -885,7 +928,7 @@ class MainWindow(QMainWindow):
                 elif raw_translated_text is not None:
                     translated_text = str(raw_translated_text).strip()
 
-            self._pending_add_character_prompts.append(
+            pending_prompts.append(
                 {
                     "game_id": game_id,
                     "name_original": normalized_name_original,
@@ -895,8 +938,8 @@ class MainWindow(QMainWindow):
                 }
             )
 
-        if not self._pending_add_character_prompts and normalized_name_original is not None:
-            self._pending_add_character_prompts.append(
+        if not pending_prompts and normalized_name_original is not None:
+            pending_prompts.append(
                 {
                     "game_id": game_id,
                     "name_original": normalized_name_original,
@@ -905,6 +948,7 @@ class MainWindow(QMainWindow):
                     "dialog_text_translated": "",
                 }
             )
+        self._pending_add_character_prompts.extend(pending_prompts)
         self._process_pending_dialogue_storage()
 
     @pyqtSlot(str, str, list)

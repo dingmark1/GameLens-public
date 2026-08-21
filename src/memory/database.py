@@ -754,6 +754,51 @@ class GameDatabase:
             row = cursor.fetchone()
             return row is not None
 
+    def get_character_by_name_original(
+        self,
+        name_original: str,
+        game_id: int,
+    ) -> dict[str, object] | None:
+        normalized_name_original = name_original.strip()
+        if not normalized_name_original:
+            raise ValueError("原文名称不能为空")
+        if game_id <= 0:
+            raise ValueError("game_id 必须为正整数")
+
+        with self._lock:
+            cursor = self._connection.execute(
+                """
+                SELECT
+                    id,
+                    name_original,
+                    name_translated,
+                    game_id,
+                    gender,
+                    extra_info,
+                    created_at,
+                    updated_at
+                FROM characters
+                WHERE name_original = ? AND game_id = ?
+                LIMIT 1;
+                """,
+                (normalized_name_original, game_id),
+            )
+            row = cursor.fetchone()
+
+        if row is None:
+            return None
+
+        return {
+            "id": row["id"],
+            "name_original": row["name_original"],
+            "name_translated": row["name_translated"],
+            "game_id": row["game_id"],
+            "gender": row["gender"],
+            "extra_info": row["extra_info"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
     def list_characters_by_game(self, game_id: int) -> list[dict[str, object]]:
         if game_id <= 0:
             raise ValueError("game_id 必须为正整数")

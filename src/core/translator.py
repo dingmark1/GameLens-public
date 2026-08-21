@@ -7,9 +7,6 @@ DeepSeek 翻译模块
 3. 解析并规范化返回，还原为同构字典
 4. 当前阶段把请求/响应打印到控制台，便于验证链路
 
-注意：
-- API Key 暂时硬编码，仅用于本地测试
-- addition 会附带 history 与 summary 等上下文信息
 """
 
 from __future__ import annotations
@@ -67,9 +64,9 @@ _SYSTEM_PROMPT_TEMPLATE = """
 你是一个专业的游戏汉化翻译引擎。精通中英文化俚语。识别出英文俚语后，禁止直译。对话翻译具有电影感。
 
 我会发送一个 JSON 对象，包含以下字段：
-- name：说话人名称（姓名、角色名或简称），需要翻译成 __TARGET_LANG__；如果是人名，请按目标语言习惯音译或意译。
+- name：说话人名称（姓名、角色名或简称），需要翻译成 __TARGET_LANG__；如果是人名，请优先结合 character_information 中提供的人物译名，严格沿用该译名，并借助补充信息辅助判断。
 - dialog：对白列表，每个元素是一句或一段角色对白，需要逐条翻译成 __TARGET_LANG__。
-- addition：附加信息字典。包含若干项辅助信息，例如 history 和 summary。该字段无需翻译，也无需返回。
+- addition：附加信息字典。包含若干项辅助信息，例如 history、summary 和 character_information。该字段无需翻译，也无需返回。
 
 你必须只返回一个 JSON 对象，字段与输入完全一致，addition字段保持为空即可：
 {"name": "...", "dialog": [...], "addition": {...}}
@@ -83,6 +80,7 @@ _SYSTEM_PROMPT_TEMPLATE = """
 5. 提供的文本中可能出现笔误与非标准用法，请尽量理解原意并翻译，贴合中文口语和游戏感。对于意义不明的错乱语句，可以视作干扰，进行舍弃。
 6. 如果 addition 中包含 "history" 字段（它是一个列表，每条格式为"角色名：对话原文"）请参考这些历史对话来理解当前句子的语境，特别注意人称代词（我/你/他/她）的一致性。
 7. 如果 addition 中包含 "summary" 字段（前情回顾文本），请结合它理解剧情背景和人物关系，确保语气、称谓与剧情脉络连续。
+如果 addition 中包含 "character_information" 字段（人物信息文本），请优先采用其中的“译名”作为 name 的中文译法，并结合“性别”“额外信息”理解人物身份与称谓，不要自行改写该人物的中文译名。
 8. 俚语、习语、隐喻、文化梗一律不直译，寻找中文功能对等的表达，译文须像中国人日常会说的话。情绪强度，须在译文中同等体现。原文中的文化特定元素（如特定动物、食物、节日、历史人物）若中文读者无感，则替换为中文语境中功能相近的元素
 9. 例如“live in a den of snakes”是一个典型的俚语，代表的意向为“与狡猾、邪恶的人为伍”请不要直译为“我住在蛇窝里”。
 """
@@ -105,6 +103,13 @@ def _build_user_prompt(result: dict[str, Any], request_id: str) -> str:
     addition["history"] = get_recent_conversation_records()
     summary = get_conversation_summary()
     addition["summary"] = summary if isinstance(summary, str) else ""
+    character_information = addition.get("character_information", "")
+    if isinstance(character_information, str):
+        addition["character_information"] = character_information.strip()
+    elif character_information is None:
+        addition["character_information"] = ""
+    else:
+        addition["character_information"] = str(character_information).strip()
 
     payload = {
         "request_id": request_id,
@@ -154,7 +159,7 @@ def _call_deepseek_api(system_prompt: str, user_prompt: str) -> str:
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
-        "temperature": 1.2,
+        "temperature": 1.0,
         # DeepSeek 支持 JSON 输出模式
         "response_format": {"type": "json_object"},
         "stream": False,
@@ -286,7 +291,9 @@ def _normalize_translation(
     # addition
     addition = parsed.get("addition", source_addition)
     if not isinstance(addition, dict):
-        addition = source_addition
+        addition = {}
+    else:
+        addition = {}
 
     parsed_request_id = parsed.get("request_id")
     if isinstance(parsed_request_id, str) and parsed_request_id.strip():
@@ -318,16 +325,12 @@ def translate_dialog_result(
         raise TypeError("request_id 必须为非空字符串")
 
     if not has_translatable_content(result):
-        raw_addition = result.get("addition", {})
-        if not isinstance(raw_addition, dict):
-            raw_addition = {}
-
         print("OCR 结果为空，跳过翻译")
         return {
             "request_id": request_id,
             "name": None,
             "dialog": [],
-            "addition": dict(raw_addition),
+            "addition": {},
         }
 
     system_prompt = _build_system_prompt(target_lang)
