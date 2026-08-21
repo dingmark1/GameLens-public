@@ -853,8 +853,6 @@ class MainWindow(QMainWindow):
         translated_dialogs = (
             translated_dialogs_raw if isinstance(translated_dialogs_raw, list) else []
         )
-        if not original_dialogs and not translated_dialogs:
-            return
 
         normalized_name_original = (
             name_original.strip()
@@ -894,6 +892,17 @@ class MainWindow(QMainWindow):
                     "name_translated": translated_name,
                     "dialog_text_original": original_text,
                     "dialog_text_translated": translated_text,
+                }
+            )
+
+        if not self._pending_add_character_prompts and normalized_name_original is not None:
+            self._pending_add_character_prompts.append(
+                {
+                    "game_id": game_id,
+                    "name_original": normalized_name_original,
+                    "name_translated": translated_name,
+                    "dialog_text_original": "",
+                    "dialog_text_translated": "",
                 }
             )
         self._process_pending_dialogue_storage()
@@ -936,6 +945,8 @@ class MainWindow(QMainWindow):
             dialog_text_translated = str(prompt_data.get("dialog_text_translated", ""))
 
             if name_original is None:
+                if not dialog_text_original and not dialog_text_translated:
+                    continue
                 try:
                     self._game_database.add_dialogue(
                         game_id=game_id,
@@ -948,6 +959,8 @@ class MainWindow(QMainWindow):
                 continue
 
             if self._game_database.character_exists(name_original, game_id):
+                if not dialog_text_original and not dialog_text_translated:
+                    continue
                 try:
                     self._game_database.add_dialogue(
                         game_id=game_id,
@@ -999,21 +1012,24 @@ class MainWindow(QMainWindow):
                     saved_name_original = active_dialog.saved_name_original
                     if isinstance(saved_name_original, str) and saved_name_original.strip():
                         selected_name_original = saved_name_original.strip()
-                try:
-                    self._game_database.add_dialogue(
-                        game_id=game_id,
-                        character_name_original=(
-                            selected_name_original
-                            if isinstance(selected_name_original, str)
-                            else None
-                        ),
-                        dialog_text_original=str(prompt_data.get("dialog_text_original", "")),
-                        dialog_text_translated=str(
-                            prompt_data.get("dialog_text_translated", "")
-                        ),
-                    )
-                except ValueError as exc:
-                    print(f"保存对话失败: {exc}")
+                dialog_text_original = str(prompt_data.get("dialog_text_original", "")).strip()
+                dialog_text_translated = str(
+                    prompt_data.get("dialog_text_translated", "")
+                ).strip()
+                if dialog_text_original or dialog_text_translated:
+                    try:
+                        self._game_database.add_dialogue(
+                            game_id=game_id,
+                            character_name_original=(
+                                selected_name_original
+                                if isinstance(selected_name_original, str)
+                                else None
+                            ),
+                            dialog_text_original=dialog_text_original,
+                            dialog_text_translated=dialog_text_translated,
+                        )
+                    except ValueError as exc:
+                        print(f"保存对话失败: {exc}")
 
         if self._is_shutting_down:
             return
