@@ -123,7 +123,8 @@ SQLite 持久化层。
 - `add_dialogue()` / `update_dialogue()` / `delete_dialogue()` / `clear_dialogues()`
 - `add_summary()` / `update_summary()` / `delete_summary()`
 - `add_game_intro()` / `update_game_intro()` / `delete_game_intro()`
-- `get_game_intro_by_game_name()` / `get_all_game_intros_with_game_name()`
+- `get_game_intro_by_game_name()` / `get_game_intro_by_game_id()`
+- `get_all_game_intros_with_game_name()`
 - `get_all_dialogues_with_game_name()`
 - `get_all_characters_with_game_name()`
 - `get_all_summaries_with_game_name()`

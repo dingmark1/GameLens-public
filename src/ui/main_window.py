@@ -189,6 +189,21 @@ class OcrRecognitionWorker(QObject):
         )
         return f"译名：{translated_name}，性别：{gender}，额外信息：{extra_info}"
 
+    def _build_game_brief(self) -> str:
+        if not isinstance(self._game_id, int) or self._game_id <= 0:
+            return ""
+
+        game_intro = self._database.get_game_intro_by_game_id(self._game_id)
+        if game_intro is None:
+            return ""
+
+        game_intro_value = game_intro.get("game_intro")
+        return (
+            game_intro_value.strip()
+            if isinstance(game_intro_value, str)
+            else ""
+        )
+
     @pyqtSlot()
     def run(self) -> None:
         current_thread = QThread.currentThread()
@@ -238,6 +253,7 @@ class OcrRecognitionWorker(QObject):
                 addition["character_information"] = self._build_character_information(
                     normalized_name
                 )
+                addition["game_brief"] = self._build_game_brief()
                 self.translation_context_ready.emit(
                     self._request_id,
                     normalized_name,

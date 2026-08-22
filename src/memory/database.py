@@ -385,6 +385,38 @@ class GameDatabase:
             "updated_at": row["updated_at"],
         }
 
+    def get_game_intro_by_game_id(self, game_id: int) -> dict[str, object] | None:
+        if game_id <= 0:
+            raise ValueError("game_id 必须为正整数")
+
+        with self._lock:
+            cursor = self._connection.execute(
+                """
+                SELECT
+                    gi.id,
+                    gi.game_name,
+                    gi.game_intro,
+                    gi.created_at,
+                    gi.updated_at
+                FROM game_intros AS gi
+                INNER JOIN games AS g ON gi.game_name = g.game_name
+                WHERE g.id = ?;
+                """,
+                (game_id,),
+            )
+            row = cursor.fetchone()
+
+        if row is None:
+            return None
+
+        return {
+            "id": row["id"],
+            "game_name": row["game_name"],
+            "game_intro": row["game_intro"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
     def get_all_game_intros_with_game_name(self) -> list[dict[str, object]]:
         with self._lock:
             cursor = self._connection.execute(

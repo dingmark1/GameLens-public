@@ -66,7 +66,7 @@ _SYSTEM_PROMPT_TEMPLATE = """
 我会发送一个 JSON 对象，包含以下字段：
 - name：说话人名称（姓名、角色名或简称），需要翻译成 __TARGET_LANG__；如果是人名，请优先结合 character_information 中提供的人物译名，严格沿用该译名，并借助补充信息辅助判断。
 - dialog：对白列表，每个元素是一句或一段角色对白，需要逐条翻译成 __TARGET_LANG__。
-- addition：附加信息字典。包含若干项辅助信息，例如 history、summary 和 character_information。该字段无需翻译，也无需返回。
+- addition：附加信息字典。包含 history、summary、character_information 和 game_brief 等辅助信息。该字段无需翻译，也无需返回。
 
 你必须只返回一个 JSON 对象，字段与输入完全一致，addition字段保持为空即可：
 {"name": "...", "dialog": [...], "addition": {...}}
@@ -81,6 +81,7 @@ _SYSTEM_PROMPT_TEMPLATE = """
 6. 如果 addition 中包含 "history" 字段（它是一个列表，每条格式为"角色名：对话原文"）请参考这些历史对话来理解当前句子的语境，特别注意人称代词（我/你/他/她）的一致性。
 7. 如果 addition 中包含 "summary" 字段（前情回顾文本），请结合它理解剧情背景和人物关系，确保语气、称谓与剧情脉络连续。
 如果 addition 中包含 "character_information" 字段（人物信息文本），请优先采用其中的“译名”作为 name 的中文译法，并结合“性别”“额外信息”理解人物身份与称谓，不要自行改写该人物的中文译名。
+如果 addition 中包含 "game_brief" 字段（当前游戏的简介），请结合其中的世界观、剧情背景、角色设定和玩法语境理解原文，优先采用符合该游戏设定的术语、称谓与表达；不要把 game_brief 的内容直接添加到译文中。
 8. 俚语、习语、隐喻、文化梗一律不直译，寻找中文功能对等的表达，译文须像中国人日常会说的话。情绪强度，须在译文中同等体现。原文中的文化特定元素（如特定动物、食物、节日、历史人物）若中文读者无感，则替换为中文语境中功能相近的元素
 9. 例如“live in a den of snakes”是一个典型的俚语，代表的意向为“与狡猾、邪恶的人为伍”，请不要直译为“我住在蛇窝里”。
 """
@@ -110,6 +111,13 @@ def _build_user_prompt(result: dict[str, Any], request_id: str) -> str:
         addition["character_information"] = ""
     else:
         addition["character_information"] = str(character_information).strip()
+    game_brief = addition.get("game_brief", "")
+    if isinstance(game_brief, str):
+        addition["game_brief"] = game_brief.strip()
+    elif game_brief is None:
+        addition["game_brief"] = ""
+    else:
+        addition["game_brief"] = str(game_brief).strip()
 
     payload = {
         "request_id": request_id,
