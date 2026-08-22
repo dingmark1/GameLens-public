@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Iterator
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from threading import RLock
@@ -28,6 +29,10 @@ _prewarm_device_logged = False
 ENABLE_OCR_SLICE = True  # 是否启用大图切片识别，默认开启以改善稀疏小字检测效果。
 OCR_SLICE_MIN_LONG_EDGE = 1000  # 长边不足该值时跳过切片，减少不必要的额外开销。
 OCR_SLICE_MIN_SHORT_EDGE = 400  # 短边不足该值时跳过切片，避免在小图上过度分片。
+OCR_SLICE_TILE_SIZE = 960  # PaddleOCR 3.x 检测模型默认按最长边 960 像素处理。
+OCR_SLICE_OVERLAP = 160  # 相邻切片保留重叠区域，避免文字在切片边缘被截断。
+OCR_SLICE_MERGE_X_THRESHOLD = 40
+OCR_SLICE_MERGE_Y_THRESHOLD = 40
 # RLock 用于保护全局引擎实例与识别过程，确保多线程下不会出现竞争条件。
 _ocr_lock = RLock()
 
@@ -47,6 +52,15 @@ class OcrDialogResult(TypedDict):
     name: str | None
     dialog: list[str]
     addition: dict[str, object]
+
+
+class OcrSliceConfig(TypedDict):
+    tile_width: int
+    tile_height: int
+    horizontal_overlap: int
+    vertical_overlap: int
+    merge_x_threshold: int
+    merge_y_threshold: int
 
 
 def set_ocr_language(lang_code: str) -> None:
@@ -80,6 +94,8 @@ def get_ocr_engine() -> PaddleOCR:
             _ocr_engine = PaddleOCR(
                 lang=_current_lang,
                 device=_ocr_device,
+                use_doc_orientation_classify=False,
+                use_doc_unwarping=False,
                 use_textline_orientation=False,  # 替代 use_angle_cls
                 det_db_unclip_ratio=1.0,
                 det_db_box_thresh=0.3,
@@ -251,8 +267,8 @@ def _preprocess_image(image_path: str | Path) -> Path:
     return processed_path
 
 
-def _build_slice_config(image_width: int, image_height: int) -> dict[str, int] | None:
-    """按图像尺寸动态生成 PaddleOCR 的 slice 参数；小图返回 None。"""
+def _build_slice_config(image_width: int, image_height: int) -> OcrSliceConfig | None:
+    """按图像尺寸生成程序侧切片配置；小图返回 None。"""
 
     if not ENABLE_OCR_SLICE:
         return None
@@ -262,22 +278,181 @@ def _build_slice_config(image_width: int, image_height: int) -> dict[str, int] |
     if long_edge < OCR_SLICE_MIN_LONG_EDGE or short_edge < OCR_SLICE_MIN_SHORT_EDGE:
         return None
 
-    # 步长设为 1/2 到 2/3 的切片大小，保证 1/3 到 1/2 的重叠
-    horizontal_stride = min(800, max(300, image_width // 3))
-    vertical_stride = min(600, max(200, image_height // 3))
-    # 固定阈值更稳定，对截屏场景 30-50px 通常合适，或者自适应
-    merge_x_thres = 40
-    merge_y_thres = 40
-    # merge_x_thres = min(64, max(16, horizontal_stride // 30))
-    # merge_y_thres = min(64, max(16, vertical_stride // 30))
-    
-
     return {
-        "horizontal_stride": horizontal_stride,
-        "vertical_stride": vertical_stride,
-        "merge_x_thres": merge_x_thres,
-        "merge_y_thres": merge_y_thres,
+        "tile_width": min(image_width, OCR_SLICE_TILE_SIZE),
+        "tile_height": min(image_height, OCR_SLICE_TILE_SIZE),
+        "horizontal_overlap": min(OCR_SLICE_OVERLAP, image_width // 4),
+        "vertical_overlap": min(OCR_SLICE_OVERLAP, image_height // 4),
+        "merge_x_threshold": OCR_SLICE_MERGE_X_THRESHOLD,
+        "merge_y_threshold": OCR_SLICE_MERGE_Y_THRESHOLD,
     }
+
+
+def _calculate_tile_starts(
+    image_size: int,
+    tile_size: int,
+    overlap: int,
+) -> list[int]:
+    """计算单个方向的切片起点，并确保图像末端被完整覆盖。"""
+
+    if image_size <= tile_size:
+        return [0]
+
+    step = tile_size - overlap
+    if step <= 0:
+        raise ValueError("OCR 切片重叠尺寸必须小于切片尺寸")
+
+    last_start = image_size - tile_size
+    starts = list(range(0, last_start + 1, step))
+    if starts[-1] != last_start:
+        starts.append(last_start)
+    return starts
+
+
+def _iter_image_tiles(
+    image: Image.Image,
+    slice_config: OcrSliceConfig,
+) -> Iterator[tuple[np.ndarray, int, int]]:
+    """按重叠窗口逐块生成 PaddleOCR 3.x 支持的 NumPy 图像输入。"""
+
+    tile_width = slice_config["tile_width"]
+    tile_height = slice_config["tile_height"]
+    x_starts = _calculate_tile_starts(
+        image.width,
+        tile_width,
+        slice_config["horizontal_overlap"],
+    )
+    y_starts = _calculate_tile_starts(
+        image.height,
+        tile_height,
+        slice_config["vertical_overlap"],
+    )
+
+    for y_start in y_starts:
+        for x_start in x_starts:
+            tile = image.crop(
+                (
+                    x_start,
+                    y_start,
+                    x_start + tile_width,
+                    y_start + tile_height,
+                )
+            )
+            yield np.array(tile.convert("RGB")), x_start, y_start
+
+
+def _extract_recognized_texts(
+    ocr_result: object,
+    image_height: float,
+    x_offset: int = 0,
+    y_offset: int = 0,
+) -> list[dict[str, object]]:
+    """提取单次预测结果，并把切片内坐标还原为全图坐标。"""
+
+    if not isinstance(ocr_result, list):
+        return []
+
+    recognized_texts: list[dict[str, object]] = []
+    for page_result in ocr_result:
+        if not isinstance(page_result, dict):
+            continue
+
+        rec_texts = page_result.get("rec_texts")
+        if not isinstance(rec_texts, list):
+            continue
+
+        for text_index, text in enumerate(rec_texts):
+            if not isinstance(text, str):
+                continue
+
+            stripped_text = text.strip()
+            if not stripped_text:
+                continue
+
+            text_box = _extract_text_box(page_result, text_index)
+            metrics = _extract_box_metrics(text_box) if text_box is not None else None
+            if metrics is None:
+                x_value = math.inf
+                y_value = math.inf
+                width_value = math.inf
+                height_value = math.inf
+                y_ratio = math.inf
+            else:
+                local_x, local_y, width_value, height_value = metrics
+                x_value = local_x + x_offset
+                y_value = local_y + y_offset
+                y_ratio = y_value / image_height
+
+            recognized_texts.append(
+                {
+                    "text": stripped_text,
+                    "x": x_value,
+                    "y": y_value,
+                    "width": width_value,
+                    "height": height_value,
+                    "y_ratio": y_ratio,
+                }
+            )
+
+    return recognized_texts
+
+
+def _is_overlapping_duplicate(
+    first: dict[str, object],
+    second: dict[str, object],
+    slice_config: OcrSliceConfig,
+) -> bool:
+    """判断两个重叠切片结果是否表示同一段文字。"""
+
+    if first["text"] != second["text"]:
+        return False
+
+    numeric_keys = ("x", "y", "width", "height")
+    first_metrics = [float(first[key]) for key in numeric_keys]
+    second_metrics = [float(second[key]) for key in numeric_keys]
+    if not all(math.isfinite(value) for value in first_metrics + second_metrics):
+        return False
+
+    first_x, first_y, first_width, first_height = first_metrics
+    second_x, second_y, second_width, second_height = second_metrics
+    x_tolerance = min(
+        slice_config["merge_x_threshold"],
+        max(first_width, second_width) / 2,
+    )
+    y_tolerance = min(
+        slice_config["merge_y_threshold"],
+        max(first_height, second_height) / 2,
+    )
+    return (
+        abs(first_x - second_x) <= x_tolerance
+        and abs(first_y - second_y) <= y_tolerance
+    )
+
+
+def _merge_slice_results(
+    recognized_texts: list[dict[str, object]],
+    new_texts: list[dict[str, object]],
+    slice_config: OcrSliceConfig,
+) -> None:
+    """合并切片结果并去除重叠区域中的重复文本框。"""
+
+    for candidate in new_texts:
+        duplicate = next(
+            (
+                existing
+                for existing in recognized_texts
+                if _is_overlapping_duplicate(existing, candidate, slice_config)
+            ),
+            None,
+        )
+        if duplicate is None:
+            recognized_texts.append(candidate)
+            continue
+
+        duplicate_area = float(duplicate["width"]) * float(duplicate["height"])
+        candidate_area = float(candidate["width"]) * float(candidate["height"])
+        if candidate_area > duplicate_area:
+            recognized_texts[recognized_texts.index(duplicate)] = candidate
 
 
 def recognize_texts(image_path: str | Path) -> list[OcrTextBlock]:
@@ -292,62 +467,53 @@ def recognize_texts(image_path: str | Path) -> list[OcrTextBlock]:
     should_cleanup = ENABLE_OCR_PREPROCESS
 
     try:
+        source_image: Image.Image | None = None
         with Image.open(processed_image_path) as image:
             image_width = int(image.width)
             image_height = float(image.height)
+            slice_config = _build_slice_config(
+                image_width=image_width,
+                image_height=int(image_height),
+            )
+            if slice_config is not None:
+                source_image = image.convert("RGB")
         if image_height <= 0:
             image_height = 1.0
         if image_width <= 0:
             image_width = 1
 
-        slice_config = _build_slice_config(image_width=image_width, image_height=int(image_height))
-
+        recognized_texts: list[dict[str, object]] = []
         with _ocr_lock:
             # 整个 predict 调用都在锁内进行，强制串行化，防止不同线程同时使用同一引擎实例。
             ocr_engine = get_ocr_engine()
             if slice_config is None:
                 ocr_result = ocr_engine.predict(str(processed_image_path))
+                recognized_texts = _extract_recognized_texts(
+                    ocr_result,
+                    image_height,
+                )
             else:
-                ocr_result = ocr_engine.predict(str(processed_image_path), slice=slice_config)
-
-        recognized_texts: list[dict[str, object]] = []
-
-        # PaddleOCR 的返回结果通常是一个列表，每个元素对应一页图像的识别信息。
-        for page_result in ocr_result:
-            if not isinstance(page_result, dict):
-                continue
-
-            rec_texts = page_result.get("rec_texts")
-            if not isinstance(rec_texts, list):
-                continue
-
-            for text_index, text in enumerate(rec_texts):
-                if not isinstance(text, str):
-                    continue
-
-                stripped_text = text.strip()
-                if stripped_text:
-                    text_box = _extract_text_box(page_result, text_index)
-                    metrics = _extract_box_metrics(text_box) if text_box is not None else None
-                    if metrics is None:
-                        x_value = math.inf
-                        y_value = math.inf
-                        width_value = math.inf
-                        height_value = math.inf
-                        y_ratio = math.inf
-                    else:
-                        x_value, y_value, width_value, height_value = metrics
-                        y_ratio = y_value / image_height
-
-                    recognized_texts.append(
-                        {
-                            "text": stripped_text,
-                            "x": x_value,
-                            "y": y_value,
-                            "width": width_value,
-                            "height": height_value,
-                            "y_ratio": y_ratio,
-                        }
+                if source_image is None:
+                    raise RuntimeError("OCR 大图切片初始化失败")
+                for tile, x_offset, y_offset in _iter_image_tiles(
+                    source_image,
+                    slice_config,
+                ):
+                    tile_height, tile_width = tile.shape[:2]
+                    ocr_result = ocr_engine.predict(
+                        tile,
+                        text_det_limit_side_len=max(tile_width, tile_height),
+                        text_det_limit_type="max",
+                    )
+                    _merge_slice_results(
+                        recognized_texts,
+                        _extract_recognized_texts(
+                            ocr_result,
+                            image_height,
+                            x_offset=x_offset,
+                            y_offset=y_offset,
+                        ),
+                        slice_config,
                     )
     finally:
         if should_cleanup and processed_image_path.exists():

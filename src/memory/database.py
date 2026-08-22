@@ -78,6 +78,21 @@ class GameDatabase:
             )
             self._connection.execute(
                 """
+                CREATE TABLE IF NOT EXISTS game_intros (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    game_name TEXT NOT NULL UNIQUE,
+                    game_intro TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (game_name)
+                        REFERENCES games(game_name)
+                        ON DELETE CASCADE
+                        ON UPDATE CASCADE
+                );
+                """
+            )
+            self._connection.execute(
+                """
                 CREATE INDEX IF NOT EXISTS idx_summaries_game_id
                 ON summaries(game_id);
                 """
@@ -302,6 +317,125 @@ class GameDatabase:
         with self._lock:
             cursor = self._connection.execute(
                 "DELETE FROM games WHERE game_name = ?;",
+                (normalized_name,),
+            )
+            self._connection.commit()
+            return int(cursor.rowcount)
+
+    def add_game_intro(self, game_name: str, game_intro: str) -> int:
+        normalized_name = game_name.strip()
+        normalized_intro = game_intro.strip()
+        if not normalized_name:
+            raise ValueError("游戏名称不能为空")
+        if not normalized_intro:
+            raise ValueError("游戏简介不能为空")
+
+        with self._lock:
+            try:
+                cursor = self._connection.execute(
+                    """
+                    INSERT INTO game_intros (
+                        game_name,
+                        game_intro
+                    ) VALUES (?, ?);
+                    """,
+                    (normalized_name, normalized_intro),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise ValueError(f"游戏“{normalized_name}”的简介已存在") from exc
+
+            self._connection.commit()
+            return int(cursor.lastrowid)
+
+    def get_game_intro_by_game_name(self, game_name: str) -> dict[str, object] | None:
+        normalized_name = game_name.strip()
+        if not normalized_name:
+            raise ValueError("游戏名称不能为空")
+
+        with self._lock:
+            cursor = self._connection.execute(
+                """
+                SELECT
+                    id,
+                    game_name,
+                    game_intro,
+                    created_at,
+                    updated_at
+                FROM game_intros
+                WHERE game_name = ?;
+                """,
+                (normalized_name,),
+            )
+            row = cursor.fetchone()
+
+        if row is None:
+            return None
+
+        return {
+            "id": row["id"],
+            "game_name": row["game_name"],
+            "game_intro": row["game_intro"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
+    def get_all_game_intros_with_game_name(self) -> list[dict[str, object]]:
+        with self._lock:
+            cursor = self._connection.execute(
+                """
+                SELECT
+                    gi.id,
+                    gi.game_name,
+                    gi.game_intro,
+                    gi.created_at,
+                    gi.updated_at
+                FROM game_intros AS gi
+                ORDER BY gi.game_name COLLATE NOCASE ASC;
+                """
+            )
+            rows = cursor.fetchall()
+
+        return [
+            {
+                "id": row["id"],
+                "game_name": row["game_name"],
+                "game_intro": row["game_intro"],
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+            }
+            for row in rows
+        ]
+
+    def update_game_intro(self, game_name: str, new_game_intro: str) -> bool:
+        normalized_name = game_name.strip()
+        normalized_intro = new_game_intro.strip()
+        if not normalized_name:
+            raise ValueError("游戏名称不能为空")
+        if not normalized_intro:
+            raise ValueError("游戏简介不能为空")
+
+        with self._lock:
+            cursor = self._connection.execute(
+                """
+                UPDATE game_intros
+                SET
+                    game_intro = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE game_name = ?;
+                """,
+                (normalized_intro, normalized_name),
+            )
+            self._connection.commit()
+            return cursor.rowcount > 0
+
+    def delete_game_intro(self, game_name: str) -> int:
+        normalized_name = game_name.strip()
+        if not normalized_name:
+            raise ValueError("游戏名称不能为空")
+
+        with self._lock:
+            cursor = self._connection.execute(
+                "DELETE FROM game_intros WHERE game_name = ?;",
                 (normalized_name,),
             )
             self._connection.commit()
