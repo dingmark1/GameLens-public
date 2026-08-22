@@ -35,6 +35,7 @@ from memory.conversation_memory import (
     clear_conversation_memory,
     clear_conversation_summary,
     is_duplicate_ocr_dialog_result,
+    load_recent_conversation_records_from_database,
     set_conversation_summary,
 )
 from memory.database import GameDatabase
@@ -431,18 +432,19 @@ class MainWindow(QMainWindow):
 
     def _on_game_combo_box_changed(self, _index: int) -> None:
         game_id = self.game_combo_box.currentData()
-        clear_conversation_memory()
         if hasattr(self, "_pending_ocr_dialog_result"):
             self._pending_ocr_dialog_result = None
 
         if isinstance(game_id, int) and game_id > 0:
             self.current_game_id = game_id
             print(f"当前游戏已切换为 ID={game_id}")
+            load_recent_conversation_records_from_database(game_id, self._game_database)
             latest_summary = self._game_database.get_latest_summary(game_id)
             set_conversation_summary(latest_summary, game_id=game_id)
         else:
             self.current_game_id = None
             print("当前处于临时模式（未选择游戏）")
+            clear_conversation_memory()
             set_conversation_summary("", game_id=None)
 
         self.pending_translations.clear()

@@ -3,4 +3,4 @@ deepseek_api_key = sk-0300e8ca9d9b48a09f471c709fee0529
 enable_ocr_preprocess = true
 top_proximity_threshold = 0.2
 memory_window_size = 10
-auto_recognition_interval_ms = 3000
+auto_recognition_interval_ms = 2500

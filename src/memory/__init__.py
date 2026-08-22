@@ -6,6 +6,7 @@ from memory.conversation_memory import (
     get_conversation_memory,
     get_conversation_summary,
     get_recent_conversation_records,
+    load_recent_conversation_records_from_database,
     is_duplicate_ocr_dialog_result,
 )
 from memory.database import GameDatabase
@@ -18,6 +19,7 @@ __all__ = [
     "get_conversation_memory",
     "get_conversation_summary",
     "get_recent_conversation_records",
+    "load_recent_conversation_records_from_database",
     "is_duplicate_ocr_dialog_result",
     "GameDatabase",
 ]
