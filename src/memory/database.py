@@ -342,6 +342,12 @@ class GameDatabase:
                     (normalized_name, normalized_intro),
                 )
             except sqlite3.IntegrityError as exc:
+                game_exists = self._connection.execute(
+                    "SELECT 1 FROM games WHERE game_name = ?;",
+                    (normalized_name,),
+                ).fetchone()
+                if game_exists is None:
+                    raise ValueError(f"游戏“{normalized_name}”不存在") from exc
                 raise ValueError(f"游戏“{normalized_name}”的简介已存在") from exc
 
             self._connection.commit()

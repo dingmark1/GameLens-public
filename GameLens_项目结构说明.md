@@ -106,7 +106,7 @@ DeepSeek 翻译模块。
 SQLite 持久化层。
 
 **作用**
-- 管理游戏、人物、对话、摘要数据
+- 管理游戏、游戏简介、人物、对话、摘要数据
 - 自动建表、建索引、做必要迁移
 - 为 UI 与记忆模块提供统一数据接口
 
@@ -115,12 +115,15 @@ SQLite 持久化层。
 - `characters`
 - `dialogues`
 - `summaries`
+- `game_intros`
 
 **关键功能**
 - `add_game()` / `delete_game()` / `list_games()`
 - `add_character()` / `update_character()` / `delete_character()`
 - `add_dialogue()` / `update_dialogue()` / `delete_dialogue()` / `clear_dialogues()`
 - `add_summary()` / `update_summary()` / `delete_summary()`
+- `add_game_intro()` / `update_game_intro()` / `delete_game_intro()`
+- `get_game_intro_by_game_name()` / `get_all_game_intros_with_game_name()`
 - `get_all_dialogues_with_game_name()`
 - `get_all_characters_with_game_name()`
 - `get_all_summaries_with_game_name()`
@@ -174,7 +177,7 @@ SQLite 持久化层。
 - 承载主界面 UI
 - 协调选区、OCR、翻译、存储、展示
 - 管理自动识别与后台线程
-- 打开人物 / 对话 / 摘要管理窗口
+- 打开人物 / 对话 / 游戏简介 / 摘要管理窗口
 
 **关键类**
 - `AddCharacterDialog`
@@ -277,7 +280,23 @@ SQLite 持久化层。
 
 ---
 
-### 2.12 `src/ui/edit_character_dialog.py`
+### 2.12 `src/ui/game_intro_window.py`
+
+游戏简介窗口。
+
+**作用**
+- 展示当前游戏的简介
+- 调用 DeepSeek 生成并保存游戏简介
+- 修改或删除已有游戏简介
+
+**关键功能**
+- `set_game()` / `refresh_game_intro()`
+- `_on_generate_clicked()`
+- `_on_edit_clicked()` / `_on_delete_clicked()`
+
+---
+
+### 2.13 `src/ui/edit_character_dialog.py`
 
 人物编辑对话框。
 
@@ -290,7 +309,7 @@ SQLite 持久化层。
 
 ---
 
-### 2.13 `src/ui/edit_dialogue_dialog.py`
+### 2.14 `src/ui/edit_dialogue_dialog.py`
 
 对话编辑对话框。
 
@@ -303,7 +322,7 @@ SQLite 持久化层。
 
 ---
 
-### 2.14 `src/ui/edit_summary_dialog.py`
+### 2.15 `src/ui/edit_summary_dialog.py`
 
 摘要编辑对话框。
 
@@ -316,7 +335,18 @@ SQLite 持久化层。
 
 ---
 
-### 2.15 `src/core/__init__.py`
+### 2.16 `src/core/game_intro_generator.py`
+
+DeepSeek 游戏简介生成模块。
+
+**作用**
+- 构造游戏资料检索与简介撰写提示词
+- 调用 DeepSeek Chat API
+- 校验并返回模型生成的游戏简介
+
+---
+
+### 2.17 `src/core/__init__.py`
 
 核心模块导出入口。
 
@@ -325,7 +355,7 @@ SQLite 持久化层。
 
 ---
 
-### 2.16 `src/memory/__init__.py`
+### 2.18 `src/memory/__init__.py`
 
 记忆模块导出入口。
 
@@ -334,7 +364,7 @@ SQLite 持久化层。
 
 ---
 
-### 2.17 `src/ui/__init__.py`
+### 2.19 `src/ui/__init__.py`
 
 UI 模块导出入口。
 
@@ -344,7 +374,7 @@ UI 模块导出入口。
 
 ---
 
-### 2.18 `src/ui/main_window.ui`
+### 2.20 `src/ui/main_window.ui`
 
 Qt Designer 界面文件。
 
@@ -354,7 +384,7 @@ Qt Designer 界面文件。
 
 ---
 
-### 2.19 `config/config.txt`
+### 2.21 `config/config.txt`
 
 运行配置文件。
 
@@ -364,12 +394,12 @@ Qt Designer 界面文件。
 
 ---
 
-### 2.20 `data/game_lens.db`
+### 2.22 `data/game_lens.db`
 
 SQLite 数据文件。
 
 **作用**
-- 存储游戏、人物、对话、摘要等持久化数据
+- 存储游戏、游戏简介、人物、对话、摘要等持久化数据
 
 ---
 
@@ -390,5 +420,5 @@ SQLite 数据文件。
 
 - 该项目的 GUI 主体是 PyQt6。
 - OCR 依赖 PaddleOCR。
-- 翻译与摘要依赖 DeepSeek API。
+- 翻译、摘要与游戏简介生成依赖 DeepSeek API。
 - 数据持久化基于 SQLite。

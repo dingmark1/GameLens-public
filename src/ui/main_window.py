@@ -42,6 +42,7 @@ from memory.database import GameDatabase
 from core.app_config import AUTO_RECOGNITION_INTERVAL_MS
 from ui.character_manager_window import CharacterManagerWindow
 from ui.dialogue_manager_window import DialogueManagerWindow
+from ui.game_intro_window import GameIntroWindow
 from ui.summary_manager_window import SummaryManagerWindow
 
 from ui.screen_region_selector import (
@@ -315,6 +316,7 @@ class MainWindow(QMainWindow):
         self._connect_ui_signals()
         self._character_manager_window: CharacterManagerWindow | None = None
         self._dialogue_manager_window: DialogueManagerWindow | None = None
+        self._game_intro_window: GameIntroWindow | None = None
         self._summary_manager_window: SummaryManagerWindow | None = None
         self._active_add_character_dialog: AddCharacterDialog | None = None
         self._pending_add_character_prompts: list[dict[str, object]] = []
@@ -428,6 +430,7 @@ class MainWindow(QMainWindow):
         self.dialogue_manager_button.clicked.connect(
             self._on_dialogue_manager_button_clicked
         )
+        self.game_intro_button.clicked.connect(self._on_game_intro_button_clicked)
         self.summary_manager_button.clicked.connect(self._on_summary_manager_button_clicked)
 
     def _on_game_combo_box_changed(self, _index: int) -> None:
@@ -447,6 +450,11 @@ class MainWindow(QMainWindow):
             clear_conversation_memory()
             set_conversation_summary("", game_id=None)
 
+        if self._game_intro_window is not None:
+            if self.current_game_id is not None:
+                self._game_intro_window.set_game(self.game_combo_box.currentText())
+            else:
+                self._game_intro_window.hide()
         self.pending_translations.clear()
 
     def _on_game_add_button_clicked(self) -> None:
@@ -702,6 +710,30 @@ class MainWindow(QMainWindow):
 
     def _on_dialogue_manager_window_destroyed(self, *_args: object) -> None:
         self._dialogue_manager_window = None
+
+    def _on_game_intro_button_clicked(self) -> None:
+        game_name = self.game_combo_box.currentText().strip()
+        if self.current_game_id is None or not game_name:
+            QMessageBox.information(self, "提示", "请先选择一个游戏")
+            return
+
+        if self._game_intro_window is None:
+            self._game_intro_window = GameIntroWindow(
+                self._game_database,
+                game_name,
+            )
+            self._game_intro_window.destroyed.connect(
+                self._on_game_intro_window_destroyed
+            )
+        else:
+            self._game_intro_window.set_game(game_name)
+
+        self._game_intro_window.show()
+        self._game_intro_window.raise_()
+        self._game_intro_window.activateWindow()
+
+    def _on_game_intro_window_destroyed(self, *_args: object) -> None:
+        self._game_intro_window = None
 
     def _on_summary_manager_button_clicked(self) -> None:
         if self._summary_manager_window is None:
@@ -1201,6 +1233,8 @@ class MainWindow(QMainWindow):
             self.game_delete_button.setEnabled(False)
             self.character_manager_button.setEnabled(False)
             self.dialogue_manager_button.setEnabled(False)
+            self.game_intro_button.setEnabled(False)
+            self.summary_manager_button.setEnabled(False)
             self.recognize_selected_region_text_button.setText("停止识别")
             return
 
@@ -1213,6 +1247,7 @@ class MainWindow(QMainWindow):
         self.game_delete_button.setEnabled(is_idle)
         self.character_manager_button.setEnabled(is_idle)
         self.dialogue_manager_button.setEnabled(is_idle)
+        self.game_intro_button.setEnabled(is_idle)
         self.summary_manager_button.setEnabled(is_idle)
         self.recognize_selected_region_text_button.setText("识别并翻译框选区域文字")
 
@@ -1249,6 +1284,10 @@ class MainWindow(QMainWindow):
         if self._dialogue_manager_window is not None:
             self._dialogue_manager_window.close()
             self._dialogue_manager_window = None
+
+        if self._game_intro_window is not None:
+            self._game_intro_window.shutdown()
+            self._game_intro_window = None
 
         if self._summary_manager_window is not None:
             self._summary_manager_window.close()

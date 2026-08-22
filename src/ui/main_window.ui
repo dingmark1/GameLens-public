@@ -7,7 +7,7 @@
     <x>0</x>
     <y>0</y>
     <width>400</width>
-   <height>475</height>
+   <height>515</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -304,22 +304,51 @@
         </property>
        </widget>
       </item>
+     </layout>
+    </item>
+    <item>
+     <layout class="QHBoxLayout" name="game_info_manager_row">
+      <property name="spacing">
+       <number>8</number>
+      </property>
+      <property name="alignment">
+       <set>Qt::AlignCenter</set>
+      </property>
+      <item alignment="Qt::AlignCenter">
+       <widget class="QPushButton" name="game_intro_button">
+        <property name="minimumSize">
+         <size>
+          <width>115</width>
+          <height>32</height>
+         </size>
+        </property>
+        <property name="maximumSize">
+         <size>
+          <width>115</width>
+          <height>32</height>
+         </size>
+        </property>
+        <property name="text">
+         <string>游戏简介</string>
+        </property>
+       </widget>
+      </item>
       <item alignment="Qt::AlignCenter">
        <widget class="QPushButton" name="summary_manager_button">
         <property name="minimumSize">
-        <size>
-         <width>115</width>
-         <height>32</height>
-        </size>
+         <size>
+          <width>115</width>
+          <height>32</height>
+         </size>
         </property>
         <property name="maximumSize">
-        <size>
-         <width>115</width>
-         <height>32</height>
-        </size>
+         <size>
+          <width>115</width>
+          <height>32</height>
+         </size>
         </property>
         <property name="text">
-        <string>摘要管理</string>
+         <string>摘要管理</string>
         </property>
        </widget>
       </item>
