@@ -484,7 +484,7 @@ Qt Designer 界面文件。
 **作用**
 - 通过 `beta/ui_beta/game_lens_beta_window.ui` 构建界面
 - 显示标题为 `GameLens_beta` 的独立窗口
-- 提供“选取游戏窗口”与“返回经典模式”按钮
+- 提供“选取游戏窗口”“解析游戏窗口”与“返回经典模式”按钮
 - 将“返回经典模式”动作通过信号回传给主窗口
 - 在 beta 模式下触发窗口选择后立即保存调试截图到 `beta/temp.jpg`
 - `beta/` 下预留 `core_beta`、`memory_beta`、`ui_beta` 三个子目录，用于隔离实验版本代码
@@ -523,17 +523,29 @@ Qt Designer 界面文件。
 
 ---
 
-### 2.25 `beta/memory_beta/window_selection_state.py`
+### 2.25 `beta/core_beta/window_parser.py`
+
+实验版窗口图像解析模块。
+
+**作用**
+- 向 DeepSeek `deepseek-v4-flash-vision-exp` 发起图像解析请求
+- 输入 `beta/temp.jpg`
+- 输出并校验游戏名、窗口栏占比与对话框相对坐标
+
+---
+
+### 2.26 `beta/memory_beta/window_selection_state.py`
 
 实验版窗口选择状态模块。
 
 **作用**
 - 暂存当前选择的游戏窗口信息
-- 供 beta 窗口与后续截图逻辑共享
+- 暂存窗口解析结果（游戏名、窗口栏占比、对话框坐标）
+- 供 beta 窗口与后续截图/解析逻辑共享
 
 ---
 
-### 2.26 `config/config.txt`
+### 2.27 `config/config.txt`
 
 运行配置文件。
 
