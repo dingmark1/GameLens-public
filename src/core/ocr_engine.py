@@ -30,7 +30,7 @@ ENABLE_OCR_SLICE = True  # 是否启用大图切片识别，默认开启以改�
 OCR_SLICE_MIN_LONG_EDGE = 1000  # 长边不足该值时跳过切片，减少不必要的额外开销。
 OCR_SLICE_MIN_SHORT_EDGE = 400  # 短边不足该值时跳过切片，避免在小图上过度分片。
 OCR_SLICE_TILE_SIZE = 960  # PaddleOCR 3.x 检测模型默认按最长边 960 像素处理。
-OCR_SLICE_OVERLAP = 160  # 相邻切片保留重叠区域，避免文字在切片边缘被截断。
+OCR_SLICE_OVERLAP = 40  # 相邻切片保留重叠区域，避免文字在切片边缘被截断。
 OCR_SLICE_MERGE_X_THRESHOLD = 40
 OCR_SLICE_MERGE_Y_THRESHOLD = 40
 # RLock 用于保护全局引擎实例与识别过程，确保多线程下不会出现竞争条件。
@@ -98,8 +98,8 @@ def get_ocr_engine() -> PaddleOCR:
                 use_doc_unwarping=False,
                 use_textline_orientation=False,  # 替代 use_angle_cls
                 det_db_unclip_ratio=1.0,
-                det_db_box_thresh=0.3,
-                det_db_thresh=0.3,
+                det_db_box_thresh=0.6,
+                det_db_thresh=0.5,
             )
 
         return _ocr_engine

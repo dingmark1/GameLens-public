@@ -573,7 +573,7 @@ def _call_character_relation_inference_api(
 ) -> str:
     relation_prompt = _build_character_relation_prompt(recent_records, related_character)
     headers = {
-        "Authorization": f"******",
+        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
         "Content-Type": "application/json",
     }
     payload = {
