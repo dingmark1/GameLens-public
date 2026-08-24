@@ -228,6 +228,7 @@ SQLite 持久化层。
 - 协调选区、OCR、翻译、存储、展示
 - 管理自动识别与后台线程
 - 打开人物 / 对话 / 游戏简介 / 摘要管理窗口
+- 在经典模式与实验模式窗口之间切换
 
 **关键类**
 - `AddCharacterDialog`
@@ -244,6 +245,7 @@ SQLite 持久化层。
 - 游戏列表增删改联动
 - 清空对话记忆 / 摘要
 - 在识别过程中辅助补全人物信息
+- 一键切换到 `GameLens_beta`，并在切换时关闭主窗口相关管理窗口
 
 **重要方法**
 - `MainWindow._start_screen_region_selection()`
@@ -475,7 +477,30 @@ Qt Designer 界面文件。
 
 ---
 
-### 2.21 `config/config.txt`
+### 2.21 `beta/ui_beta/game_lens_beta_window.py`
+
+实验版入口窗口。
+
+**作用**
+- 通过 `beta/ui_beta/game_lens_beta_window.ui` 构建界面
+- 显示标题为 `GameLens_beta` 的独立窗口
+- 提供固定大小、居中的“返回经典模式”按钮
+- 将“返回经典模式”动作通过信号回传给主窗口
+- `beta/` 下预留 `core_beta`、`memory_beta`、`ui_beta` 三个子目录，用于隔离实验版本代码
+
+---
+
+### 2.22 `beta/ui_beta/game_lens_beta_window.ui`
+
+实验版窗口的 Qt Designer 界面文件。
+
+**作用**
+- 定义 `GameLens_beta` 的窗口标题、尺寸和按钮布局
+- 由 `GameLensBetaWindow` 通过 `uic.loadUi()` 加载
+
+---
+
+### 2.23 `config/config.txt`
 
 运行配置文件。
 
@@ -495,7 +520,7 @@ Qt Designer 界面文件。
 
 ---
 
-### 2.22 `data/game_lens.db`
+### 2.24 `data/game_lens.db`
 
 SQLite 数据文件。
 

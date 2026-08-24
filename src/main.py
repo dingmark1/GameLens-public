@@ -1,6 +1,11 @@
 import sys
+from pathlib import Path
 
 from PyQt6.QtWidgets import QApplication
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
 from ui.main_window import MainWindow
 from ui.screen_region_selector import reset_selection_rect_memory

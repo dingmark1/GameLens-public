@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Any
 import uuid
+
+ROOT_DIR = Path(__file__).resolve().parents[2]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
 from PyQt6 import uic
 from PyQt6.QtCore import QObject, QThread, QTimer, QRect, Qt, pyqtSignal, pyqtSlot
@@ -42,6 +47,7 @@ from memory.database import GameDatabase
 from core.app_config import AUTO_RECOGNITION_INTERVAL_MS
 from ui.character_manager_window import CharacterManagerWindow
 from ui.dialogue_manager_window import DialogueManagerWindow
+from beta.ui_beta.game_lens_beta_window import GameLensBetaWindow
 from ui.game_intro_window import GameIntroWindow
 from ui.summary_manager_window import SummaryManagerWindow
 
@@ -334,6 +340,7 @@ class MainWindow(QMainWindow):
         self._dialogue_manager_window: DialogueManagerWindow | None = None
         self._game_intro_window: GameIntroWindow | None = None
         self._summary_manager_window: SummaryManagerWindow | None = None
+        self._game_lens_beta_window: GameLensBetaWindow | None = None
         self._active_add_character_dialog: AddCharacterDialog | None = None
         self._pending_add_character_prompts: list[dict[str, object]] = []
         self._active_add_character_prompt_data: dict[str, object] | None = None
@@ -448,6 +455,7 @@ class MainWindow(QMainWindow):
         )
         self.game_intro_button.clicked.connect(self._on_game_intro_button_clicked)
         self.summary_manager_button.clicked.connect(self._on_summary_manager_button_clicked)
+        self.switch_to_beta_button.clicked.connect(self._on_switch_to_beta_button_clicked)
 
     def _on_game_combo_box_changed(self, _index: int) -> None:
         game_id = self.game_combo_box.currentData()
@@ -765,6 +773,38 @@ class MainWindow(QMainWindow):
 
     def _on_summary_manager_window_destroyed(self, *_args: object) -> None:
         self._summary_manager_window = None
+
+    def _on_switch_to_beta_button_clicked(self) -> None:
+        if self._is_translation_task_in_progress():
+            print("翻译任务进行中，实验版本切换不可用")
+            return
+
+        self._close_main_related_windows_for_beta()
+        self.hide()
+
+        if self._game_lens_beta_window is None:
+            self._game_lens_beta_window = GameLensBetaWindow()
+            self._game_lens_beta_window.return_requested.connect(
+                self._on_beta_window_return_requested
+            )
+            self._game_lens_beta_window.destroyed.connect(
+                self._on_beta_window_destroyed
+            )
+
+        self._game_lens_beta_window.show()
+        self._game_lens_beta_window.raise_()
+        self._game_lens_beta_window.activateWindow()
+
+    def _on_beta_window_return_requested(self) -> None:
+        if self._is_shutting_down:
+            return
+
+        if self._game_lens_beta_window is not None:
+            self._game_lens_beta_window.hide()
+        self._show_window_in_front()
+
+    def _on_beta_window_destroyed(self, *_args: object) -> None:
+        self._game_lens_beta_window = None
 
     def _clear_memory_history(self) -> None:
         clear_conversation_memory()
@@ -1230,6 +1270,39 @@ class MainWindow(QMainWindow):
             self._ocr_prewarm_thread.deleteLater()
             self._ocr_prewarm_thread = None
 
+    def _is_translation_task_in_progress(self) -> bool:
+        return self._is_recognition_running or self._ocr_thread is not None
+
+    def _close_main_related_windows_for_beta(self) -> None:
+        if self._character_manager_window is not None:
+            self._character_manager_window.close()
+            self._character_manager_window = None
+
+        if self._dialogue_manager_window is not None:
+            self._dialogue_manager_window.close()
+            self._dialogue_manager_window = None
+
+        if self._summary_manager_window is not None:
+            self._summary_manager_window.close()
+            self._summary_manager_window = None
+
+        if self._game_intro_window is not None:
+            self._game_intro_window.shutdown()
+            self._game_intro_window = None
+
+        if self._active_add_character_dialog is not None:
+            self._active_add_character_dialog.close()
+            self._active_add_character_dialog = None
+        self._active_add_character_prompt_data = None
+        self._pending_add_character_prompts.clear()
+
+        if self._selection_overlay is not None:
+            self._selection_overlay.close()
+            self._selection_overlay = None
+        self._hide_selection_cancel_button_overlay()
+        self._hide_selection_outline_overlay()
+        self._hide_translation_overlay()
+
     def _set_ui_state(self, state: str) -> None:
         # 状态切换是整个 UI 控制的核心：
         # - 空闲时允许用户点击按钮；
@@ -1251,6 +1324,7 @@ class MainWindow(QMainWindow):
             self.dialogue_manager_button.setEnabled(False)
             self.game_intro_button.setEnabled(False)
             self.summary_manager_button.setEnabled(False)
+            self.switch_to_beta_button.setEnabled(False)
             self.recognize_selected_region_text_button.setText("停止识别")
             return
 
@@ -1265,6 +1339,9 @@ class MainWindow(QMainWindow):
         self.dialogue_manager_button.setEnabled(is_idle)
         self.game_intro_button.setEnabled(is_idle)
         self.summary_manager_button.setEnabled(is_idle)
+        self.switch_to_beta_button.setEnabled(
+            is_idle and not self._is_translation_task_in_progress()
+        )
         self.recognize_selected_region_text_button.setText("识别并翻译框选区域文字")
 
     def _show_window_in_front(self) -> None:
@@ -1308,6 +1385,11 @@ class MainWindow(QMainWindow):
         if self._summary_manager_window is not None:
             self._summary_manager_window.close()
             self._summary_manager_window = None
+
+        if self._game_lens_beta_window is not None:
+            self._game_lens_beta_window.blockSignals(True)
+            self._game_lens_beta_window.close()
+            self._game_lens_beta_window = None
 
         if self._active_add_character_dialog is not None:
             self._active_add_character_dialog.close()
