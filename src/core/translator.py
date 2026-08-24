@@ -62,6 +62,7 @@ class TranslationError(RuntimeError):
 
 _SYSTEM_PROMPT_TEMPLATE = """
 你是一个专业的游戏汉化翻译引擎。精通中英文化俚语。识别出英文俚语后，禁止直译。对话翻译具有电影感。
+请将dialog作为history对话序列的后继进行符合前文的翻译。请严格遵守以下要求：
 
 我会发送一个 JSON 对象，包含以下字段：
 - name：说话人名称（姓名、角色名或简称），需要翻译成 __TARGET_LANG__；如果是人名，请优先结合 character_information 中提供的人物译名，严格沿用该译名，并借助补充信息辅助判断。
