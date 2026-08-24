@@ -98,7 +98,7 @@ def get_ocr_engine() -> PaddleOCR:
                 use_doc_unwarping=False,
                 use_textline_orientation=False,  # 替代 use_angle_cls
                 det_db_unclip_ratio=1.0,
-                det_db_box_thresh=0.6,
+                det_db_box_thresh=0.8,
                 det_db_thresh=0.5,
             )
 
