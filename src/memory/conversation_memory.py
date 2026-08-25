@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from threading import RLock, Thread
-from typing import Any
+from typing import Any, TypedDict
 
 import requests
 from langchain_classic.memory.buffer_window import ConversationBufferWindowMemory
@@ -36,6 +36,13 @@ _UNSET_GAME_ID = object()
 
 class SummaryGenerationError(RuntimeError):
     """前情回顾生成失败。"""
+
+
+class CharacterExtraInfoUpdate(TypedDict):
+    """经过校验、可安全写入数据库的人物补充信息。"""
+
+    name_original: str
+    extra_info: str
 
 
 def get_conversation_memory() -> ConversationBufferWindowMemory:
@@ -324,44 +331,48 @@ def _generate_summary_task(
     summary_context_start_id: int,
     database: GameDatabase,
 ) -> None:
+    global _conversation_summary
     generated_summary: str | None = None
     try:
-        dialogue_rows = database.get_dialogues_by_game_range(
-            game_id=game_id,
-            start_id=summary_context_start_id,
-            end_id=end_id,
-        )
-        recent_records = _build_summary_records(dialogue_rows)
-        related_character = _build_related_character_information(
-            dialogue_rows,
-            database,
-            game_id,
-        )
-        if len(recent_records) < _MEMORY_WINDOW_SIZE:
-            print(
-                f"对话条数不足，跳过本轮前情回顾生成: game_id={game_id}, "
-                f"summary_context_start_id={summary_context_start_id}, end_id={end_id}"
+        try:
+            dialogue_rows = database.get_dialogues_by_game_range(
+                game_id=game_id,
+                start_id=summary_context_start_id,
+                end_id=end_id,
             )
+            recent_records = _build_summary_records(dialogue_rows)
+            related_characters = _build_related_character_information(
+                dialogue_rows,
+                database,
+                game_id,
+            )
+            if len(recent_records) < _MEMORY_WINDOW_SIZE:
+                print(
+                    f"对话条数不足，跳过本轮前情回顾生成: game_id={game_id}, "
+                    f"summary_context_start_id={summary_context_start_id}, end_id={end_id}"
+                )
+                return
+
+            generated_summary = _call_summary_api(recent_records)
+            database.add_summary(
+                game_id=game_id,
+                content=generated_summary,
+                start_id=start_id,
+                end_id=end_id,
+            )
+        except (SummaryGenerationError, ValueError) as exc:
+            print(f"生成前情回顾失败，保留旧摘要并等待下次重试: {exc}")
             return
 
-        generated_summary = _call_summary_api(recent_records)
-        database.add_summary(
-            game_id=game_id,
-            content=generated_summary,
-            start_id=start_id,
-            end_id=end_id,
-        )
-    except (SummaryGenerationError, ValueError) as exc:
-        print(f"生成前情回顾失败，保留旧摘要并等待下次重试: {exc}")
-        return
-    try:
-        addition_text = _call_character_relation_inference_api(
-            recent_records,
-            related_character,
-        )
-        _apply_summary_addition(database, game_id, addition_text)
-    except (SummaryGenerationError, ValueError) as exc:
-        print(f"人物关系推断失败，本轮仅保存摘要: {exc}")
+        if related_characters:
+            try:
+                character_updates = _call_character_relation_inference_api(
+                    recent_records,
+                    related_characters,
+                )
+                _apply_character_updates(database, game_id, character_updates)
+            except (SummaryGenerationError, ValueError) as exc:
+                print(f"人物关系推断失败，本轮仅保存摘要: {exc}")
     finally:
         with _conversation_lock:
             _summary_generating_game_ids.discard(game_id)
@@ -441,53 +452,44 @@ def _build_related_character_information(
     dialogue_rows: list[dict[str, object]],
     database: GameDatabase,
     game_id: int,
-) -> list[str]:
-    seen_names: set[str] = set()
-    related_character_information: list[str] = []
+) -> list[dict[str, str]]:
+    dialogue_text = "\n".join(_build_summary_records(dialogue_rows))
+    speaker_names = {
+        raw_name.strip()
+        for row in dialogue_rows
+        if isinstance((raw_name := row.get("character_name_original")), str)
+        and raw_name.strip()
+    }
+    related_characters: list[dict[str, str]] = []
 
-    for row in dialogue_rows:
-        raw_name = row.get("character_name_original")
-        if not isinstance(raw_name, str):
+    for character in database.list_characters_by_game(game_id):
+        name_original = _normalize_optional_string(character.get("name_original"))
+        name_translated = _normalize_optional_string(character.get("name_translated"))
+        if not name_original:
             continue
-        name_original = raw_name.strip()
-        if not name_original or name_original in seen_names:
+        if (
+            name_original not in speaker_names
+            and name_original not in dialogue_text
+            and (not name_translated or name_translated not in dialogue_text)
+        ):
             continue
-        seen_names.add(name_original)
 
-        character = database.get_character_by_name_original(name_original, game_id)
-        if character is None:
-            continue
-
-        related_character_information.append(
-            _format_character_information(character)
+        related_characters.append(
+            {
+                "name_original": name_original,
+                "name_translated": name_translated,
+                "gender": _normalize_optional_string(character.get("gender")),
+                "existing_extra_info": _normalize_optional_string(
+                    character.get("extra_info")
+                ),
+            }
         )
 
-    return related_character_information
+    return related_characters
 
 
-def _format_character_information(character: dict[str, object]) -> str:
-    name_original_value = character.get("name_original")
-    name_translated_value = character.get("name_translated")
-    gender_value = character.get("gender")
-    extra_info_value = character.get("extra_info")
-
-    name_original = (
-        name_original_value.strip()
-        if isinstance(name_original_value, str)
-        else ""
-    )
-    name_translated = (
-        name_translated_value.strip()
-        if isinstance(name_translated_value, str)
-        else ""
-    )
-    gender = gender_value.strip() if isinstance(gender_value, str) else ""
-    extra_info = (
-        extra_info_value.strip()
-        if isinstance(extra_info_value, str)
-        else ""
-    )
-    return f"原名：{name_original}，译名：{name_translated}，性别：{gender}，补充信息：{extra_info}"
+def _normalize_optional_string(value: object) -> str:
+    return value.strip() if isinstance(value, str) else ""
 
 
 def _call_summary_api(recent_records: list[str]) -> str:
@@ -569,9 +571,12 @@ def _build_summary_prompt(
 
 def _call_character_relation_inference_api(
     recent_records: list[str],
-    related_character: list[str],
-) -> str:
-    relation_prompt = _build_character_relation_prompt(recent_records, related_character)
+    related_characters: list[dict[str, str]],
+) -> list[CharacterExtraInfoUpdate]:
+    relation_prompt = _build_character_relation_prompt(
+        recent_records,
+        related_characters,
+    )
     headers = {
         "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
         "Content-Type": "application/json",
@@ -583,10 +588,16 @@ def _call_character_relation_inference_api(
                 "role": "system",
                 "content": (
                     "你是游戏人物关系分析助手。"
-                    "你会接收 recent_records 与 related_character。"
-                    "请基于最近剧情推断人物关系，并生成可用于更新人物补充信息的结果。"
-                    "addition 字段格式为：\"人名原名：附加信息；人名原名：附加信息\"。"
-                    "只输出 JSON：{\"addition\":\"...\"}。"
+                    "你会接收 recent_records 与 characters。"
+                    "请分别分析每个人物的关系、性格、行为倾向和已确认经历，"
+                    "并将 existing_extra_info 与近期剧情整合成去重后的完整补充信息。"
+                    "只返回有充分剧情依据且需要更新的人物；每个人物最多返回一次。"
+                    "name_original 必须逐字复制 characters 中的原名，不得创造人物。"
+                    "extra_info 只写该人物的信息内容，不要以该人物自己的原名或译名开头，"
+                    "允许删除重复、过时或价值较低的旧描述。"
+                    "只输出 JSON，格式为："
+                    "{\"characters\":[{\"name_original\":\"原名\","
+                    "\"extra_info\":\"整合后的完整补充信息\"}]}。"
                 ),
             },
             {"role": "user", "content": relation_prompt},
@@ -623,21 +634,16 @@ def _call_character_relation_inference_api(
         raise SummaryGenerationError(f"DeepSeek 人物关系内容类型错误: {content!r}")
 
     payload_data = _extract_json_payload(content)
-    addition_value = payload_data.get("addition", "")
-    if isinstance(addition_value, dict):
-        return _format_addition_dict(addition_value)
-    if not isinstance(addition_value, str):
-        return str(addition_value).strip()
-    return addition_value.strip()
+    return _parse_character_updates(payload_data, related_characters)
 
 
 def _build_character_relation_prompt(
     recent_records: list[str],
-    related_character: list[str],
+    related_characters: list[dict[str, str]],
 ) -> str:
     payload = {
         "recent_records": recent_records[-_MEMORY_WINDOW_SIZE:],
-        "related_character": related_character,
+        "characters": related_characters,
     }
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
@@ -665,80 +671,95 @@ def _extract_json_payload(content: str) -> dict[str, Any]:
     return parsed
 
 
-def _format_addition_dict(addition: dict[str, Any]) -> str:
-    parts: list[str] = []
-    for key, value in addition.items():
-        if not isinstance(key, str):
-            continue
-        normalized_key = key.strip()
-        if not normalized_key:
-            continue
-        if isinstance(value, str):
-            normalized_value = value.strip()
-        else:
-            normalized_value = str(value).strip()
-        parts.append(f"{normalized_key}：{normalized_value}")
-    return "；".join(parts)
+def _parse_character_updates(
+    payload: dict[str, Any],
+    related_characters: list[dict[str, str]],
+) -> list[CharacterExtraInfoUpdate]:
+    raw_updates = payload.get("characters")
+    if not isinstance(raw_updates, list):
+        raise SummaryGenerationError("人物关系响应中的 characters 必须为列表")
 
+    allowed_characters = {
+        character["name_original"]: character
+        for character in related_characters
+        if character.get("name_original")
+    }
+    seen_names: set[str] = set()
+    updates: list[CharacterExtraInfoUpdate] = []
+    for index, raw_update in enumerate(raw_updates):
+        if not isinstance(raw_update, dict):
+            raise SummaryGenerationError(
+                f"人物关系响应中的 characters[{index}] 必须为对象"
+            )
 
-def _parse_addition_updates(addition_text: str) -> list[tuple[str, str]]:
-    normalized_text = addition_text.strip()
-    if not normalized_text:
-        return []
+        name_original = raw_update.get("name_original")
+        extra_info = raw_update.get("extra_info")
+        if not isinstance(name_original, str) or not name_original.strip():
+            raise SummaryGenerationError(
+                f"人物关系响应中的 characters[{index}].name_original 必须为非空字符串"
+            )
+        if not isinstance(extra_info, str) or not extra_info.strip():
+            raise SummaryGenerationError(
+                f"人物关系响应中的 characters[{index}].extra_info 必须为非空字符串"
+            )
 
-    segments = [normalized_text]
-    for separator in ("；", ";", "\n"):
-        if separator in normalized_text:
-            segments = [segment.strip() for segment in normalized_text.split(separator)]
-            break
+        normalized_name = name_original.strip()
+        if normalized_name not in allowed_characters:
+            raise SummaryGenerationError(
+                f"人物关系响应包含未知人物原名: {normalized_name}"
+            )
+        if normalized_name in seen_names:
+            raise SummaryGenerationError(
+                f"人物关系响应重复包含人物: {normalized_name}"
+            )
 
-    updates: list[tuple[str, str]] = []
-    for segment in segments:
-        if not segment:
-            continue
-        separator_index = segment.find("：")
-        if separator_index == -1:
-            separator_index = segment.find(":")
-        if separator_index <= 0:
-            continue
-        name_original = segment[:separator_index].strip()
-        extra_info = segment[separator_index + 1 :].strip()
-        if not name_original or not extra_info:
-            continue
-        updates.append((name_original, extra_info))
+        normalized_extra_info = " ".join(extra_info.strip().split())
+        character = allowed_characters[normalized_name]
+        own_names = {
+            normalized_name,
+            character.get("name_translated", "").strip(),
+        }
+        if any(
+            own_name and _starts_with_character_name(normalized_extra_info, own_name)
+            for own_name in own_names
+        ):
+            raise SummaryGenerationError(
+                f"人物“{normalized_name}”的补充信息不应以自身姓名开头"
+            )
+
+        seen_names.add(normalized_name)
+        updates.append(
+            {
+                "name_original": normalized_name,
+                "extra_info": normalized_extra_info,
+            }
+        )
+
     return updates
 
 
-def _merge_extra_info(existing: str | None, new_info: str) -> str:
-    normalized_new_info = new_info.strip()
-    if not normalized_new_info:
-        return (existing or "").strip()
-
-    normalized_existing = existing.strip() if isinstance(existing, str) else ""
-    if not normalized_existing:
-        return normalized_new_info
-    if normalized_new_info in normalized_existing:
-        return normalized_existing
-    return f"{normalized_existing}；{normalized_new_info}"
+def _starts_with_character_name(extra_info: str, character_name: str) -> bool:
+    if not extra_info.startswith(character_name):
+        return False
+    suffix = extra_info[len(character_name) :].lstrip()
+    return not suffix or suffix[0] in "，,：:；;。的"
 
 
-def _apply_summary_addition(
+def _apply_character_updates(
     database: GameDatabase,
     game_id: int,
-    addition_text: str,
+    updates: list[CharacterExtraInfoUpdate],
 ) -> None:
-    updates = _parse_addition_updates(addition_text)
-    if not updates:
-        return
-
-    for name_original, extra_info in updates:
+    for update in updates:
+        name_original = update["name_original"]
         character = database.get_character_by_name_original(name_original, game_id)
         if character is None:
-            continue
+            raise ValueError(
+                f"人物“{name_original}”不属于 game_id={game_id}，无法更新补充信息"
+            )
 
         current_name_translated = character.get("name_translated")
         current_gender = character.get("gender")
-        current_extra_info = character.get("extra_info")
         updated = database.update_character(
             character_id=int(character["id"]),
             name_translated=(
@@ -747,10 +768,10 @@ def _apply_summary_addition(
                 else ""
             ),
             gender=current_gender if isinstance(current_gender, str) else None,
-            extra_info=_merge_extra_info(
-                current_extra_info if isinstance(current_extra_info, str) else None,
-                extra_info,
-            ),
+            extra_info=update["extra_info"],
         )
         if not updated:
-            print(f"更新人物补充信息失败: game_id={game_id}, name_original={name_original}")
+            raise ValueError(
+                f"更新人物补充信息失败: game_id={game_id}, "
+                f"name_original={name_original}"
+            )

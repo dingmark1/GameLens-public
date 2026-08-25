@@ -210,9 +210,8 @@ SQLite 持久化层。
 **人物信息相关**
 - `_call_character_relation_inference_api()`
 - `_build_character_relation_prompt()`
-- `_parse_addition_updates()`
-- `_merge_extra_info()`
-- `_apply_summary_addition()`
+- `_parse_character_updates()`
+- `_apply_character_updates()`
 
 **说明**
 - 该模块同时处理“内存记忆”与“数据库回填”两条路径，保证程序重启后仍能恢复最近上下文。
