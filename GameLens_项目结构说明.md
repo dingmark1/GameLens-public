@@ -477,101 +477,7 @@ Qt Designer 界面文件。
 
 ---
 
-### 2.21 `beta/ui_beta/game_lens_beta_window.py`
-
-实验版入口窗口。
-
-**作用**
-- 通过 `beta/ui_beta/game_lens_beta_window.ui` 构建界面
-- 显示标题为 `GameLens_beta` 的独立窗口
-- 提供“选取游戏窗口”“解析游戏窗口”“识别并翻译”与“返回经典模式”按钮
-- 将“返回经典模式”动作通过信号回传给主窗口
-- 在 beta 模式下触发窗口选择后立即保存调试截图到 `beta/temp.jpg`
-- `beta/` 下预留 `core_beta`、`memory_beta`、`ui_beta` 三个子目录，用于隔离实验版本代码
-
----
-
-### 2.22 `beta/ui_beta/game_lens_beta_window.ui`
-
-实验版窗口的 Qt Designer 界面文件。
-
-**作用**
-- 定义 `GameLens_beta` 的窗口标题、尺寸和按钮布局
-- 由 `GameLensBetaWindow` 通过 `uic.loadUi()` 加载
-
----
-
-### 2.23 `beta/ui_beta/window_selection_dialog.py`
-
-实验版窗口选择对话框。
-
-**作用**
-- 枚举可见顶层窗口
-- 展示窗口标题与类名
-- 在用户确认后返回选中的窗口信息
-
----
-
-### 2.24 `beta/core_beta/window_capture.py`
-
-实验版窗口枚举与截图模块。
-
-**作用**
-- 枚举系统可见顶层窗口
-- 过滤系统窗口与自身窗口
-- 将选中的窗口截图保存为 JPEG
-
----
-
-### 2.25 `beta/core_beta/window_parser.py`
-
-实验版窗口图像解析模块。
-
-**作用**
-- 向 DeepSeek `deepseek-v4-flash-vision-exp` 发起图像解析请求
-- 输入 `beta/temp.jpg`
-- 输出并校验游戏名、窗口栏占比与对话框相对坐标
-
----
-
-### 2.26 `beta/core_beta/ocr_engine_beta.py`
-
-实验版 OCR 引擎与文本分类模块。
-
-**作用**
-- 创建并复用 beta 侧 PaddleOCR 引擎
-- 对窗口截图先裁掉顶部栏，再执行 OCR
-- 按 dialog_box 区域分类为“非对话文本 / 人名 / 对话”
-- 将多行 OCR 文本按阅读顺序拼接成单句
-
----
-
-### 2.27 `beta/core_beta/translator_beta.py`
-
-实验版翻译模块。
-
-**作用**
-- 向 DeepSeek `deepseek-chat` 发送 beta OCR 识别结果
-- 发送字段：`name`、`dialog`、`additional_text`、`addition`
-- 要求返回同结构 JSON，并解析为 beta 翻译结果
-
----
-
-### 2.28 `beta/memory_beta/window_selection_state.py`
-
-实验版窗口选择状态模块。
-
-**作用**
-- 暂存当前选择的游戏窗口信息
-- 暂存窗口解析结果（游戏名、窗口栏占比、对话框坐标）
-- 暂存 beta OCR 识别结果（人名、对话、非对话文本）
-- 暂存 beta 翻译结果（译名、译对话、译附加文本、扩展字段）
-- 维护最近 `memory_window_size` 条对话历史，供翻译请求写入 `addition.history`
-- 供 beta 窗口与后续截图/解析逻辑共享
-
----
-
-### 2.29 `config/config.txt`
+### 2.21 `config/config.txt`
 
 运行配置文件。
 
@@ -591,7 +497,7 @@ Qt Designer 界面文件。
 
 ---
 
-### 2.24 `data/game_lens.db`
+### 2.22 `data/game_lens.db`
 
 SQLite 数据文件。
 
@@ -625,3 +531,96 @@ SQLite 数据文件。
 - 数据持久化基于 SQLite。
 - 框选区域当前只保存在内存中，重启后不会保留。
 - 当前实现对多显示器和高 DPI 环境做了适配。
+
+---
+
+## 5. Beta 版本相关（集中说明）
+
+`beta/` 目录用于承载实验版本代码，与经典模式解耦，当前结构为：
+
+- `beta/ui_beta/`：Beta 窗口与交互界面
+- `beta/core_beta/`：Beta 识别/解析/翻译核心逻辑
+- `beta/memory_beta/`：Beta 运行时状态与摘要缓存
+
+### 5.1 `beta/ui_beta/game_lens_beta_window.py`
+
+实验版入口窗口（`GameLens_beta`）。
+
+**作用**
+- 通过 `beta/ui_beta/game_lens_beta_window.ui` 构建界面
+- 提供“选取游戏窗口”“解析游戏窗口”“识别并翻译”“返回经典模式”按钮
+- 调度 beta 的窗口截图、解析、OCR、翻译、历史与摘要流程
+- 将“返回经典模式”动作通过信号回传给经典主窗口
+
+### 5.2 `beta/ui_beta/game_lens_beta_window.ui`
+
+实验版窗口 UI 文件。
+
+**作用**
+- 定义 `GameLens_beta` 的窗口布局、控件与按钮位置
+- 由 `GameLensBetaWindow` 通过 `uic.loadUi()` 加载
+
+### 5.3 `beta/ui_beta/window_selection_dialog.py`
+
+实验版窗口选择对话框。
+
+**作用**
+- 枚举可见顶层窗口
+- 展示窗口标题 + 类名
+- 由用户确认目标游戏窗口并回传选择结果
+
+### 5.4 `beta/core_beta/window_capture.py`
+
+实验版窗口枚举与截图模块。
+
+**作用**
+- 枚举系统可见顶层窗口并过滤系统窗口/自身窗口
+- 按选中窗口截图并保存 JPEG
+- 首次选择窗口后会保存调试截图到 `beta/temp.jpg`
+
+### 5.5 `beta/core_beta/window_parser.py`
+
+实验版窗口图像解析模块。
+
+**作用**
+- 调用 DeepSeek `deepseek-v4-flash-vision-exp`
+- 解析 `beta/temp.jpg`
+- 产出并校验：`game_name`、`top_bar_vertical_ratio`、`dialog_box(x1,x2,y1,y2)`
+
+### 5.6 `beta/core_beta/ocr_engine_beta.py`
+
+实验版 OCR 与文本分类模块。
+
+**作用**
+- 创建并复用 beta 侧 PaddleOCR
+- 基于 `top_bar_vertical_ratio` 先裁掉顶部栏再识别
+- 基于 `dialog_box` 分类为“非对话文本 / 人名 / 对话”
+- 将多行文本拼接为可直接下游使用的句子
+
+### 5.7 `beta/core_beta/translator_beta.py`
+
+实验版翻译模块。
+
+**作用**
+- 调用 DeepSeek `deepseek-chat`
+- 发送字段：`name`、`dialog`、`additional_text`、`addition`
+- 要求返回同结构 JSON，并解析为 beta 翻译结果
+- 支持将最近对话历史写入 `addition.history`
+
+### 5.8 `beta/memory_beta/window_selection_state.py`
+
+实验版运行时状态模块。
+
+**作用**
+- 暂存窗口选择信息（标题、类名、PID）
+- 暂存窗口解析结果、OCR 结果、翻译结果
+- 维护最近 `memory_window_size` 条对话历史
+
+### 5.9 `beta/memory_beta/summary_memory_beta.py`
+
+实验版摘要模块。
+
+**作用**
+- 对“对话”计数，每满 `memory_window_size` 条触发一次摘要
+- 将最近 `memory_window_size` 条对话发给 DeepSeek 生成简短摘要
+- 仅缓存最近一条摘要结果（覆盖旧值）
