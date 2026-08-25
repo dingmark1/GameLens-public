@@ -53,6 +53,7 @@ GameLens 是一个基于 Python + PyQt6 的游戏文本识别、翻译与资料�
 - `enable_ocr_preprocess`
 - `top_proximity_threshold`
 - `memory_window_size`
+- `memory_window_multiplier`
 - `auto_recognition_interval_ms`
 
 **说明**
@@ -490,6 +491,7 @@ Qt Designer 界面文件。
 - `enable_ocr_preprocess`
 - `top_proximity_threshold`
 - `memory_window_size`
+- `memory_window_multiplier`
 - `auto_recognition_interval_ms`
 
 **说明**

@@ -16,6 +16,7 @@ class AppConfig:
     enable_ocr_preprocess: bool
     top_proximity_threshold: float
     memory_window_size: int
+    memory_window_multiplier: int
     auto_recognition_interval_ms: int
 
 
@@ -51,6 +52,16 @@ def _require_value(section: SectionProxy, key: str) -> str:
     return value
 
 
+def _parse_positive_int(value: str, key: str) -> int:
+    try:
+        parsed_value = int(value)
+    except ValueError as exc:
+        raise ValueError(f"config.txt 中 {key} 的值必须为整数") from exc
+    if parsed_value <= 0:
+        raise ValueError(f"config.txt 中 {key} 的值必须大于 0")
+    return parsed_value
+
+
 def _parse_config() -> AppConfig:
     section = _load_config()[_CONFIG_SECTION]
 
@@ -60,9 +71,17 @@ def _parse_config() -> AppConfig:
             _require_value(section, "enable_ocr_preprocess"), "ENABLE_OCR_PREPROCESS"
         ),
         top_proximity_threshold=float(_require_value(section, "top_proximity_threshold")),
-        memory_window_size=int(_require_value(section, "memory_window_size")),
-        auto_recognition_interval_ms=int(
-            _require_value(section, "auto_recognition_interval_ms")
+        memory_window_size=_parse_positive_int(
+            _require_value(section, "memory_window_size"),
+            "memory_window_size",
+        ),
+        memory_window_multiplier=_parse_positive_int(
+            section.get("memory_window_multiplier", fallback="3"),
+            "memory_window_multiplier",
+        ),
+        auto_recognition_interval_ms=_parse_positive_int(
+            _require_value(section, "auto_recognition_interval_ms"),
+            "auto_recognition_interval_ms",
         ),
     )
 
@@ -77,4 +96,5 @@ DEEPSEEK_API_KEY = APP_CONFIG.deepseek_api_key
 ENABLE_OCR_PREPROCESS = APP_CONFIG.enable_ocr_preprocess
 TOP_PROXIMITY_THRESHOLD = APP_CONFIG.top_proximity_threshold
 _MEMORY_WINDOW_SIZE = APP_CONFIG.memory_window_size
+_MEMORY_WINDOW_MULTIPLIER = APP_CONFIG.memory_window_multiplier
 AUTO_RECOGNITION_INTERVAL_MS = APP_CONFIG.auto_recognition_interval_ms

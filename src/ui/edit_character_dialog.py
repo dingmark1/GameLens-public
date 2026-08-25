@@ -7,6 +7,7 @@ from PyQt6.QtWidgets import (
     QFormLayout,
     QLineEdit,
     QMessageBox,
+    QTextEdit,
     QVBoxLayout,
 )
 
@@ -41,9 +42,13 @@ class EditCharacterDialog(QDialog):
         gender_value = character.get("gender")
         self._gender_input.setText("" if gender_value is None else str(gender_value))
 
-        self._extra_info_input = QLineEdit(self)
+        self._extra_info_input = QTextEdit(self)
+        self._extra_info_input.setAcceptRichText(False)
+        self._extra_info_input.setMinimumHeight(96)
         extra_info_value = character.get("extra_info")
-        self._extra_info_input.setText("" if extra_info_value is None else str(extra_info_value))
+        self._extra_info_input.setPlainText(
+            "" if extra_info_value is None else str(extra_info_value)
+        )
 
         self._game_input = QLineEdit(self)
         self._game_input.setText(str(character.get("game_name", "")))
@@ -73,7 +78,7 @@ class EditCharacterDialog(QDialog):
 
         name_translated = self._name_translated_input.text().strip()
         gender = self._gender_input.text().strip()
-        extra_info = self._extra_info_input.text().strip()
+        extra_info = self._extra_info_input.toPlainText().strip()
         if not name_translated:
             QMessageBox.warning(self, "提示", "译文名不能为空")
             return

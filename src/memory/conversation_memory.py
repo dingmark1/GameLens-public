@@ -8,6 +8,7 @@ import requests
 from langchain_classic.memory.buffer_window import ConversationBufferWindowMemory
 
 from core.app_config import DEEPSEEK_API_KEY
+from core.app_config import _MEMORY_WINDOW_MULTIPLIER
 from core.app_config import _MEMORY_WINDOW_SIZE
 from memory.database import GameDatabase
 
@@ -28,6 +29,7 @@ _temporary_summary_pending_records: list[str] = []
 _temporary_summary_generating = False
 _temporary_summary_generation_token = 0
 _MAX_SQLITE_INTEGER = 9223372036854775807
+_SUMMARY_CONTEXT_RECORD_LIMIT = _MEMORY_WINDOW_SIZE * _MEMORY_WINDOW_MULTIPLIER
 _default_database: GameDatabase | None = None
 _UNSET_GAME_ID = object()
 
@@ -245,14 +247,13 @@ def _trigger_temporary_summary_generation_if_needed(record: str) -> None:
         if len(_temporary_summary_pending_records) < _MEMORY_WINDOW_SIZE:
             return
 
-        previous_summary = _conversation_summary
         recent_records = _temporary_summary_pending_records[:_MEMORY_WINDOW_SIZE]
         generation_token = _temporary_summary_generation_token
         _temporary_summary_generating = True
 
     worker = Thread(
         target=_generate_temporary_summary_task,
-        args=(previous_summary, recent_records, generation_token),
+        args=(recent_records, generation_token),
         daemon=True,
     )
     worker.start()
@@ -276,11 +277,6 @@ def _trigger_summary_generation_if_needed(
         if isinstance(latest_summary_record, dict)
         else None
     )
-    previous_summary = (
-        str(latest_summary_record.get("content", ""))
-        if isinstance(latest_summary_record, dict)
-        else ""
-    )
     start_id = (
         int(latest_summary_end_id) + 1
         if isinstance(latest_summary_end_id, int) and latest_summary_end_id > 0
@@ -297,6 +293,10 @@ def _trigger_summary_generation_if_needed(
     batch_dialogues = unsummarized_dialogues[:_MEMORY_WINDOW_SIZE]
     batch_start_id = int(batch_dialogues[0]["id"])
     batch_end_id = int(batch_dialogues[-1]["id"])
+    summary_context_start_id = max(
+        1,
+        batch_end_id - _SUMMARY_CONTEXT_RECORD_LIMIT + 1,
+    )
 
     with _conversation_lock:
         if game_id in _summary_generating_game_ids:
@@ -307,9 +307,9 @@ def _trigger_summary_generation_if_needed(
         target=_generate_summary_task,
         args=(
             game_id,
-            previous_summary,
             batch_start_id,
             batch_end_id,
+            summary_context_start_id,
             target_database,
         ),
         daemon=True,
@@ -319,16 +319,16 @@ def _trigger_summary_generation_if_needed(
 
 def _generate_summary_task(
     game_id: int,
-    previous_summary: str,
     start_id: int,
     end_id: int,
+    summary_context_start_id: int,
     database: GameDatabase,
 ) -> None:
     generated_summary: str | None = None
     try:
         dialogue_rows = database.get_dialogues_by_game_range(
             game_id=game_id,
-            start_id=start_id,
+            start_id=summary_context_start_id,
             end_id=end_id,
         )
         recent_records = _build_summary_records(dialogue_rows)
@@ -340,11 +340,11 @@ def _generate_summary_task(
         if len(recent_records) < _MEMORY_WINDOW_SIZE:
             print(
                 f"对话条数不足，跳过本轮前情回顾生成: game_id={game_id}, "
-                f"start_id={start_id}, end_id={end_id}"
+                f"summary_context_start_id={summary_context_start_id}, end_id={end_id}"
             )
             return
 
-        generated_summary = _call_summary_api(previous_summary, recent_records)
+        generated_summary = _call_summary_api(recent_records)
         database.add_summary(
             game_id=game_id,
             content=generated_summary,
@@ -377,14 +377,13 @@ def _generate_summary_task(
 
 
 def _generate_temporary_summary_task(
-    previous_summary: str,
     recent_records: list[str],
     generation_token: int,
 ) -> None:
     generated_summary: str | None = None
     global _conversation_summary, _conversation_summary_game_id, _temporary_summary_generating
     try:
-        generated_summary = _call_summary_api(previous_summary, recent_records)
+        generated_summary = _call_summary_api(recent_records)
     except SummaryGenerationError as exc:
         print(f"生成临时前情回顾失败，保留旧摘要并等待下次重试: {exc}")
         with _conversation_lock:
@@ -402,7 +401,6 @@ def _generate_temporary_summary_task(
 
         if len(_temporary_summary_pending_records) >= _MEMORY_WINDOW_SIZE:
             next_batch = _temporary_summary_pending_records[:_MEMORY_WINDOW_SIZE]
-            previous_summary = _conversation_summary
             _temporary_summary_generating = True
         else:
             next_batch = []
@@ -411,7 +409,7 @@ def _generate_temporary_summary_task(
     if next_batch:
         worker = Thread(
             target=_generate_temporary_summary_task,
-            args=(previous_summary, next_batch, generation_token),
+            args=(next_batch, generation_token),
             daemon=True,
         )
         worker.start()
@@ -492,8 +490,8 @@ def _format_character_information(character: dict[str, object]) -> str:
     return f"原名：{name_original}，译名：{name_translated}，性别：{gender}，补充信息：{extra_info}"
 
 
-def _call_summary_api(previous_summary: str, recent_records: list[str]) -> str:
-    summary_prompt = _build_summary_prompt(previous_summary, recent_records)
+def _call_summary_api(recent_records: list[str]) -> str:
+    summary_prompt = _build_summary_prompt(recent_records)
     headers = {
         "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
         "Content-Type": "application/json",
@@ -504,8 +502,9 @@ def _call_summary_api(previous_summary: str, recent_records: list[str]) -> str:
             {
                 "role": "system",
                 "content": (
-                    "你是游戏剧情整理助手。请用第三人称生成简洁连贯的前情回顾，"
-                    "继承旧摘要脉络并融入新对话信息，控制在200字以内。"
+                    "你是游戏剧情整理助手。请用第三人称生成简洁连贯的近期剧情梗概，"
+                    "重点描述 latest_records 内的最新进展，并允许遗忘过旧剧情。"
+                    "控制在200字以内。"
                     "只输出 JSON：{\"summary\":\"...\"}。"
                 ),
             },
@@ -557,12 +556,13 @@ def _call_summary_api(previous_summary: str, recent_records: list[str]) -> str:
 
 
 def _build_summary_prompt(
-    previous_summary: str,
     recent_records: list[str],
 ) -> str:
     payload = {
-        "previous_summary": previous_summary,
-        "recent_records": recent_records[-_MEMORY_WINDOW_SIZE:],
+        "memory_window_size": _MEMORY_WINDOW_SIZE,
+        "memory_window_multiplier": _MEMORY_WINDOW_MULTIPLIER,
+        "recent_records": recent_records,
+        "latest_records": recent_records[-_MEMORY_WINDOW_SIZE:],
     }
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
