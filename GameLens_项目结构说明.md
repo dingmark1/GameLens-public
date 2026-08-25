@@ -484,7 +484,7 @@ Qt Designer 界面文件。
 **作用**
 - 通过 `beta/ui_beta/game_lens_beta_window.ui` 构建界面
 - 显示标题为 `GameLens_beta` 的独立窗口
-- 提供“选取游戏窗口”“解析游戏窗口”与“返回经典模式”按钮
+- 提供“选取游戏窗口”“解析游戏窗口”“识别并翻译”与“返回经典模式”按钮
 - 将“返回经典模式”动作通过信号回传给主窗口
 - 在 beta 模式下触发窗口选择后立即保存调试截图到 `beta/temp.jpg`
 - `beta/` 下预留 `core_beta`、`memory_beta`、`ui_beta` 三个子目录，用于隔离实验版本代码
@@ -534,18 +534,44 @@ Qt Designer 界面文件。
 
 ---
 
-### 2.26 `beta/memory_beta/window_selection_state.py`
+### 2.26 `beta/core_beta/ocr_engine_beta.py`
+
+实验版 OCR 引擎与文本分类模块。
+
+**作用**
+- 创建并复用 beta 侧 PaddleOCR 引擎
+- 对窗口截图先裁掉顶部栏，再执行 OCR
+- 按 dialog_box 区域分类为“非对话文本 / 人名 / 对话”
+- 将多行 OCR 文本按阅读顺序拼接成单句
+
+---
+
+### 2.27 `beta/core_beta/translator_beta.py`
+
+实验版翻译模块。
+
+**作用**
+- 向 DeepSeek `deepseek-chat` 发送 beta OCR 识别结果
+- 发送字段：`name`、`dialog`、`additional_text`、`addition`
+- 要求返回同结构 JSON，并解析为 beta 翻译结果
+
+---
+
+### 2.28 `beta/memory_beta/window_selection_state.py`
 
 实验版窗口选择状态模块。
 
 **作用**
 - 暂存当前选择的游戏窗口信息
 - 暂存窗口解析结果（游戏名、窗口栏占比、对话框坐标）
+- 暂存 beta OCR 识别结果（人名、对话、非对话文本）
+- 暂存 beta 翻译结果（译名、译对话、译附加文本、扩展字段）
+- 维护最近 `memory_window_size` 条对话历史，供翻译请求写入 `addition.history`
 - 供 beta 窗口与后续截图/解析逻辑共享
 
 ---
 
-### 2.27 `config/config.txt`
+### 2.29 `config/config.txt`
 
 运行配置文件。
 

@@ -8,13 +8,13 @@
   <property name="minimumSize">
    <size>
     <width>360</width>
-    <height>350</height>
+    <height>410</height>
    </size>
   </property>
   <property name="maximumSize">
    <size>
     <width>360</width>
-    <height>350</height>
+    <height>410</height>
    </size>
   </property>
   <layout class="QVBoxLayout" name="verticalLayout">
@@ -97,6 +97,25 @@
      </property>
      <property name="text">
       <string>解析游戏窗口</string>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QPushButton" name="recognize_and_translate_button">
+     <property name="minimumSize">
+      <size>
+       <width>240</width>
+       <height>40</height>
+      </size>
+     </property>
+     <property name="maximumSize">
+      <size>
+       <width>240</width>
+       <height>40</height>
+      </size>
+     </property>
+     <property name="text">
+      <string>识别并翻译</string>
      </property>
     </widget>
    </item>
