@@ -28,6 +28,11 @@ from beta.memory_beta.window_selection_state import (
     set_parsed_game_window_info,
     set_selected_game_window,
 )
+from beta.memory_beta.summary_memory_beta import (
+    append_records_for_summary,
+    clear_summary_cache,
+    get_latest_summary,
+)
 from beta.ui_beta.window_selection_dialog import WindowSelectionDialog
 
 
@@ -73,7 +78,8 @@ class WindowOcrWorker(QObject):
         try:
             capture_window_to_jpeg(self._window_info.hwnd, self._image_path)
             ocr_result = recognize_window_dialog(self._image_path, self._parsed_info)
-            append_conversation_history(ocr_result)
+            appended_records = append_conversation_history(ocr_result)
+            append_records_for_summary(appended_records)
             translation_result = translate_ocr_result(ocr_result)
             self.finished.emit(ocr_result, translation_result)
         except BetaTranslationError as exc:
@@ -145,6 +151,9 @@ class GameLensBetaWindow(QWidget):
         translation_result = get_beta_translation_result()
         if translation_result is not None:
             label_text += "\n已暂存翻译结果"
+        latest_summary = get_latest_summary()
+        if latest_summary:
+            label_text += "\n已生成摘要"
         self.selected_window_label.setText(label_text)
 
     def _on_select_game_window_clicked(self) -> None:
@@ -161,6 +170,7 @@ class GameLensBetaWindow(QWidget):
         set_beta_ocr_result(None)
         set_beta_translation_result(None)
         clear_conversation_history()
+        clear_summary_cache()
         try:
             capture_window_to_jpeg(window_info.hwnd, self._temp_image_path)
         except RuntimeError as exc:
